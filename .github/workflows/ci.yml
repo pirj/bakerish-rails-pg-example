@@ -1,20 +1,12 @@
 # Validation workflow for pirj/setup-bakerish@v2 + pirj/bakeri.sh end-
-# to-end. Runs on macos-14 (Apple Silicon, HVF) because aq's first-
-# cold base-build hangs in the Alpine ISO GRUB autoselect under Linux/
-# KVM — tracked in aq's ROADMAP as a portability bug. The macOS/HVF
-# path is the one the maintainer develops against and the one this
-# repo's pre-built aq-base release asset matches (aarch64 / Alpine
-# 3.22.2 / size=16G).
+# to-end. Runs on ubuntu-latest: the path adopters will actually use.
+# First run on a given cache key = cold (aq's base-build runs); subsequent
+# runs on the same key = warm (snapshot layer cache restored).
 #
-# Cold flow: setup-bakerish installs aq+rlock+bakeri.sh; this workflow
-# then stages the pre-built aq base from the `aq-base-3.22.2-aarch64-
-# 16G` release asset so aq's `aq new --size=16G` finds the base raw
-# already present and skips bootstrap_base_image. `bake run` proceeds
-# to build the per-plugin snapshot layers and execute the command
-# inside the VM.
-#
-# Warm flow: setup-bakerish cache restore re-populates ~/.local/share/
-# aq/aarch64; the stage-base step sees the file present and no-ops.
+# NOTE: aq's first-cold base-build currently hangs on the Alpine ISO
+# GRUB autoselect under Linux/KVM (see aq/ROADMAP). The
+# diagnose-kvm.yml sibling workflow exists to triage it. Until that's
+# resolved, this workflow's cold runs will time out.
 
 name: ci
 
@@ -30,28 +22,12 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
       - uses: pirj/setup-bakerish@v2
-
-      - name: Stage pre-built aq base on cold cache
-        shell: bash
-        run: |
-          set -e
-          BASE_RAW="$HOME/.local/share/aq/aarch64/alpine-base-3.22.2-aarch64-16G.raw"
-          if [ -f "$BASE_RAW" ]; then
-            echo "warm: aq base already present (cache hit) — skipping stage"
-            exit 0
-          fi
-          echo "cold: fetching pre-built aq base from release asset"
-          mkdir -p "$HOME/.local/share/aq"
-          curl -sL \
-            "https://github.com/${{ github.repository }}/releases/download/aq-base-3.22.2-aarch64-16G/aq-base-aarch64-16G.tar.zst" \
-            | zstd -d | tar -xf - -C "$HOME/.local/share/aq"
-          ls -la "$HOME/.local/share/aq/aarch64/"
 
       - name: bake run — verify the warm DB
         run: |
