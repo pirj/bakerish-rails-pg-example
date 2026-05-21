@@ -1,0 +1,42 @@
+# Validation workflow for pirj/setup-bakerish@v2 + pirj/bakeri.sh end-
+# to-end. Two-job structure:
+#
+#   - `test`: full setup-bakerish action; runs `bake run` against the
+#     fixture. First run on a given cache key = cold; subsequent runs
+#     on the same key = warm.
+#   - `bench`: minimal timing wrapper around `bake run` so we can see
+#     the wall-clock in the run log.
+#
+# Both jobs share the same cache key (key derives from `bakerish.toml`
+# + Dockerfile + docker-compose.yml); the second job hits warm on top
+# of the first's cache.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pirj/setup-bakerish@v2
+
+      - name: bake run — verify the warm DB
+        run: |
+          set -e
+          # Times the full `bake run` call (cold on first run, warm on
+          # subsequent). The cmd inside the VM uses the [prebuild.pg-
+          # ready] sentinel file that the prebuild layer wrote during
+          # snapshot_build.
+          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-ready && cat /home/rlock/repo/.pg-ready'

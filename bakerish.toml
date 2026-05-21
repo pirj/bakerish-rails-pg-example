@@ -1,0 +1,15 @@
+# Validation fixture: tiny Rails+Postgres-shaped project that exercises
+# the bakeri.sh CI integration end-to-end on GH Actions.
+#
+# What this declares:
+#   - 4 GiB guest RAM for the docker-compose live snapshot.
+#   - A trivial `[prebuild.pg-ready]` that pings the warm DB and writes
+#     a sentinel file, hashed against the compose file so the layer
+#     invalidates if compose changes.
+
+[memory]
+size = "4G"
+
+[prebuild.pg-ready]
+cmd = "docker compose exec -T db pg_isready -U postgres && echo ok > /home/rlock/repo/.pg-ready"
+key_files = ["docker-compose.yml"]
