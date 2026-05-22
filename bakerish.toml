@@ -2,10 +2,15 @@
 # the bakeri.sh CI integration end-to-end on GH Actions.
 #
 # What this declares:
+#   - 4 GiB guest disk (rlock's default 16G is overkill — single
+#     postgres container, no codebase, no large images).
 #   - 4 GiB guest RAM for the docker-compose live snapshot.
 #   - A trivial `[prebuild.pg-ready]` that pings the warm DB and writes
 #     a sentinel file, hashed against the compose file so the layer
 #     invalidates if compose changes.
+
+[disk]
+size = "4G"
 
 [memory]
 size = "4G"
