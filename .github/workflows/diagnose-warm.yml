@@ -33,7 +33,11 @@ jobs:
 
       - uses: pirj/setup-bakerish@v2
         with:
-          cache-restore-only: 'true'  # don't save; we don't want to pollute the validation cache
+          # Force cold path: unique cache prefix per run (no hit possible,
+          # nothing to pollute the validation cache with). restore-only
+          # to skip the post-job save too.
+          cache-key-prefix: 'diag-warm-${{ github.run_id }}'
+          cache-restore-only: 'true'
 
       - name: Cold path bake run
         run: |
