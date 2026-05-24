@@ -1,0 +1,92 @@
+# Cache-integrity test: confirm actions/cache@v4 corrupts memory.bin.zst.
+#
+# Same-job warm restart (diagnose-warm.yml phase 4) proved qemu's
+# `-incoming file:` is reliable: cold path → manually re-stage the
+# captured memory.bin.zst → aq stop → aq start → SSH probe SUCCEEDS,
+# with the original snapshot's process tree intact (postgres, dockerd,
+# sshd at their original PIDs).
+#
+# Cross-job warm via actions/cache@v4 fails with at least three
+# distinct failure modes across runs — that's bytes-corrupted-in-
+# different-places, not a single mode. So the corruption is real.
+#
+# This workflow proves it byte-perfectly:
+#  - Job "save": run cold path with a unique cache key, compute
+#    sha256 + size of memory.bin.zst, write to an artifact, let the
+#    post-job step save it to actions/cache.
+#  - Job "restore" (depends on save): restore that key, compute
+#    sha256 + size, compare to the artifact. Exit failure on diff.
+
+name: cache-integrity
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CACHE_KEY: cache-int-${{ github.run_id }}
+
+jobs:
+  save:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      sha256: ${{ steps.fingerprint.outputs.sha256 }}
+      size:   ${{ steps.fingerprint.outputs.size }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          cache-key-prefix: ${{ env.CACHE_KEY }}
+      - name: Cold path
+        run: time bake run -- bash -c 'echo COLD_OK'
+
+      - name: Fingerprint memory.bin.zst (save side)
+        id: fingerprint
+        run: |
+          set -ex
+          LIVE_MEM=$(find "$HOME/.local/share/aq/cache" -name 'memory.bin.zst' | head -1)
+          [ -n "$LIVE_MEM" ] || { echo 'no memory.bin.zst in cache'; exit 1; }
+          SHA=$(sha256sum "$LIVE_MEM" | cut -d' ' -f1)
+          SIZE=$(stat -c '%s' "$LIVE_MEM")
+          echo "SAVE_SHA=$SHA"
+          echo "SAVE_SIZE=$SIZE"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE"   >> "$GITHUB_OUTPUT"
+          zstd -t "$LIVE_MEM"
+
+  restore:
+    needs: save
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          cache-key-prefix: ${{ env.CACHE_KEY }}
+          cache-restore-only: 'true'
+
+      - name: Fingerprint memory.bin.zst (restore side) + compare
+        run: |
+          set -ex
+          LIVE_MEM=$(find "$HOME/.local/share/aq/cache" -name 'memory.bin.zst' | head -1)
+          [ -n "$LIVE_MEM" ] || { echo 'cache restore did not deliver memory.bin.zst'; exit 1; }
+          SHA=$(sha256sum "$LIVE_MEM" | cut -d' ' -f1)
+          SIZE=$(stat -c '%s' "$LIVE_MEM")
+          echo "RESTORE_SHA=$SHA"
+          echo "RESTORE_SIZE=$SIZE"
+          echo "SAVE_SHA=${{ needs.save.outputs.sha256 }}"
+          echo "SAVE_SIZE=${{ needs.save.outputs.size }}"
+          echo "=== zstd -t on restored ==="
+          zstd -t "$LIVE_MEM"
+          if [ "$SHA" != "${{ needs.save.outputs.sha256 }}" ]; then
+            echo "CORRUPTION CONFIRMED — sha256 differs"
+            exit 1
+          fi
+          if [ "$SIZE" != "${{ needs.save.outputs.size }}" ]; then
+            echo "SIZE DIFFERS"
+            exit 1
+          fi
+          echo "memory.bin.zst is byte-perfect across actions/cache round-trip"
