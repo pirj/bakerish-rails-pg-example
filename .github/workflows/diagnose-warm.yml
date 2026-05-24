@@ -1,12 +1,12 @@
-# Diagnostic: warm-path hostfwd-not-applied. Phase 2.
+# Diagnostic: warm-path live-restore phase 3.
 #
-# Phase 1 found: qemu lives, migration completes, VM status=running,
-# but `info network` shows NO hostfwd on the user netdev — and `nc`
-# to the SSH port gets Connection refused. The aq add_ssh_forward
-# call returned 0 (no error) but the forward wasn't actually added.
-#
-# This phase: directly poke the HMP socket with hostfwd_add and read
-# what qemu says back. Same fixture, warm cache.
+# Phase 1: qemu is running, hostfwd is added (ss shows :PORT LISTEN
+#   by qemu-system-x86_64), but nc/ssh from host get Connection
+#   refused. That's qemu RST'ing on behalf of guest = guest's :22
+#   isn't reachable.
+# Phase 2: confirmed hostfwd_add works syntactically.
+# Phase 3 (this): poke the guest via serial console. Is the guest
+#   alive at all? Is sshd running? Is eth0 configured?
 
 name: diagnose-warm
 
@@ -25,7 +25,7 @@ jobs:
 
       - uses: pirj/setup-bakerish@v2
 
-      - name: Run bake in background + poke HMP hostfwd_add directly
+      - name: Background bake + serial-console probe of live-restored guest
         shell: bash
         run: |
           set -x
@@ -33,67 +33,55 @@ jobs:
           VM_DIR="$HOME/.local/share/aq/$VM_NAME"
 
           mkdir -p /tmp/diag
-          (
-            time bake run -- bash -c 'echo BAKE_RUN_INSIDE_OK; hostname'
-          ) > /tmp/diag/bake-stdout.log 2>&1 &
+          ( time bake run -- bash -c 'echo INSIDE_OK; hostname' ) > /tmp/diag/bake.log 2>&1 &
           BAKE_PID=$!
 
-          # Wait for qemu pidfile, then ~30s for live restore + steady state.
           for i in $(seq 1 90); do
             [ -f "$VM_DIR/process.pid" ] && break
             sleep 1
           done
-          sleep 30
+          sleep 30  # let live-restore complete
 
-          echo "=== bake-stdout.log ==="
-          cat /tmp/diag/bake-stdout.log
-
-          echo "=== qemu cmdline ==="
           QEMU_PID=$(cat "$VM_DIR/process.pid")
-          tr '\0' ' ' < /proc/$QEMU_PID/cmdline 2>/dev/null | fold -w 120
-          echo
+          echo "=== bake.log so far ==="
+          cat /tmp/diag/bake.log
 
-          echo "=== HMP info network (before our hostfwd_add poke) ==="
+          echo "=== host: ss for SSH port ==="
+          SSH_PORT=$(cat "$VM_DIR/ssh-port.conf" | tr -d ' \n')
+          ss -tlnp 2>&1 | grep -E ":$SSH_PORT|qemu-system" | head
+
+          echo "=== host: nc :$SSH_PORT ==="
+          timeout 3 nc -vz 127.0.0.1 "$SSH_PORT" 2>&1 || true
+
+          echo "=== SERIAL drain — passive (5s) ==="
+          timeout 5 socat -u UNIX-CONNECT:"$VM_DIR/command.sock" STDOUT 2>&1 | tail -c 4096 | xxd | tail -40 || true
+
+          echo "=== SERIAL nudge — send Enter, wait 2s ==="
           {
-            printf '%s\n' 'info network' 'info status'
+            printf '\n'
             sleep 2
-          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+          } | timeout 4 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | tail -c 4096 | xxd | tail -40 || true
 
-          echo "=== HMP hostfwd_add tcp::9999-:22 — try variant 1 (no netdev id) ==="
+          echo "=== SERIAL nudge — login as root, run diag inside ==="
           {
-            printf '%s\n' 'hostfwd_add tcp::9999-:22'
+            printf '\n'
+            sleep 1
+            printf 'root\n'
             sleep 2
-          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
-
-          echo "=== HMP info network — did v1 take effect? ==="
-          { printf '%s\n' 'info network'; sleep 2; } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
-
-          echo "=== HMP hostfwd_add user.0 tcp::9998-:22 — try variant 2 (user.0 prefix) ==="
-          {
-            printf '%s\n' 'hostfwd_add user.0 tcp::9998-:22'
+            printf 'echo MARKER_GUEST_OK; date; hostname; ip -4 a show eth0; ss -tlnp; ps aux | grep -E "sshd|docker" | head\n'
+            sleep 4
+            printf 'echo MARKER_GUEST_END\n'
             sleep 2
-          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+          } | timeout 15 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | tail -c 8192
 
-          echo "=== HMP info network — did v2 take effect? ==="
-          { printf '%s\n' 'info network'; sleep 2; } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+          echo "=== ssh -v probe (after guest poke) ==="
+          timeout 6 ssh -v \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=4 -o BatchMode=yes \
+            -p "$SSH_PORT" root@localhost "echo SSH_OK_AT_$(date +%s); uname -a" 2>&1 | tail -30 || true
 
-          echo "=== ss -tlnp for ports 9998-9999 ==="
-          ss -tlnp 2>&1 | grep -E "9998|9999" || echo "(none listening)"
-
-          echo "=== HMP help hostfwd ==="
-          {
-            printf '%s\n' 'help hostfwd_add' 'help hostfwd_remove'
-            sleep 2
-          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
-
-          echo "=== QMP query-commands for hostfwd-relevant commands ==="
-          {
-            printf '%s\n' '{"execute":"qmp_capabilities"}' \
-                          '{"execute":"query-commands"}'
-            sleep 2
-          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/qmp.sock" 2>&1 | tr ',' '\n' | grep -iE "hostfwd|net" | head
-
-          # Cleanup
+          # Cleanup. NO `quit` in HMP — that just kills the qemu we still
+          # need to finish the background bake.
           kill $BAKE_PID 2>/dev/null || true
           kill -9 $QEMU_PID 2>/dev/null || true
 
