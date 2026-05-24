@@ -28,9 +28,11 @@ jobs:
           # in aq/rlock/bakeri.sh means the old cached layers are no
           # longer compatible. Lets us force-cold subsequent runs
           # without having to delete cache entries by hand.
-          cache-key-prefix: 'bakeri-v2.5.20b'
+          cache-key-prefix: 'bakeri-v2.5.20b'   # known-warm cache from earlier green
 
       - name: bake run — verify the warm DB
+        id: bake
+        continue-on-error: true
         run: |
           set -e
           # Times the full `bake run` call (cold on first run, warm on
@@ -38,3 +40,26 @@ jobs:
           # ready] sentinel file that the prebuild layer wrote during
           # snapshot_build.
           time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-ready && cat /home/rlock/repo/.pg-ready'
+
+      - name: Probe guest via serial after bake failure
+        if: steps.bake.outcome == 'failure'
+        run: |
+          set -x
+          VM_NAME=$(basename "$(pwd)")
+          VM_DIR="$HOME/.local/share/aq/$VM_NAME"
+          [ -S "$VM_DIR/command.sock" ] || { echo "no command.sock"; exit 0; }
+          # Login + dump anything that could refuse ssh: /etc/nologin
+          # presence, PAM config, sshd error log, dmesg tail, date,
+          # clocksource, fail2ban / sshguard if any, last entries.
+          {
+            printf '\n'
+            sleep 1
+            printf 'root\n'
+            sleep 2
+            printf 'echo MARK_DATE; date; uptime; echo MARK_NOLOGIN; ls -la /etc/nologin 2>&1; head -c 500 /etc/nologin 2>&1; echo MARK_PAM_SSHD; cat /etc/pam.d/sshd 2>&1; cat /etc/pam.d/base-account 2>&1; cat /etc/pam.d/base-auth 2>&1; echo MARK_SEC; ls /etc/security/ 2>&1; echo MARK_PROC_SSHD; ps aux | grep -E "sshd|fail2ban|sshguard"; echo MARK_SSHD_CFG; grep -vE "^(#|$)" /etc/ssh/sshd_config 2>&1; echo MARK_DMESG; dmesg | tail -40; echo MARK_CLOCK; cat /sys/devices/system/clocksource/clocksource0/{available,current}_clocksource 2>&1; echo MARK_LASTLOG; lastb 2>&1 | head -20; echo MARK_AUTHLOG; cat /var/log/messages 2>/dev/null | tail -40; cat /var/log/auth.log 2>/dev/null | tail -40; logread 2>/dev/null | tail -40; echo MARK_DONE\n'
+            sleep 8
+          } | timeout 25 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | tail -200 || true
+
+      - name: Fail if bake failed
+        if: steps.bake.outcome == 'failure'
+        run: exit 1
