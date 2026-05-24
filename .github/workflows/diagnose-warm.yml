@@ -1,22 +1,12 @@
-# Diagnostic: warm-path SSH-not-reachable hang.
+# Diagnostic: warm-path hostfwd-not-applied. Phase 2.
 #
-# After cold path was made green (3m20s total), a `gh workflow run ci`
-# rerun hits warm cache (Layers ready in 2s) but then `aq start` of the
-# final live-restored VM never responds to SSH for the full 3 min wait.
-# qmp_wait_migrate_incoming / cont loop both succeed cleanly inside
-# aq (no "incoming migration did not complete" or "VM did not
-# transition to running" errors), so qemu reports running but the
-# guest is unresponsive.
+# Phase 1 found: qemu lives, migration completes, VM status=running,
+# but `info network` shows NO hostfwd on the user netdev — and `nc`
+# to the SSH port gets Connection refused. The aq add_ssh_forward
+# call returned 0 (no error) but the forward wasn't actually added.
 #
-# This workflow runs `bake run` in the background, waits 30s, then
-# dumps every observable state we can get at: qemu process status,
-# QMP query-{status,migrate,name}, monitor `info {status,migrate,
-# network,block,registers}`, serial console buffer drain, direct ssh
-# probe, raw nc to the SSH host port. All as artifacts.
-#
-# Trigger manually via `gh workflow run diagnose-warm`. Expects the
-# GH cache key `bakeri-Linux-e68...` to already exist from the green
-# cold run; otherwise this re-runs cold and tells us nothing new.
+# This phase: directly poke the HMP socket with hostfwd_add and read
+# what qemu says back. Same fixture, warm cache.
 
 name: diagnose-warm
 
@@ -35,103 +25,81 @@ jobs:
 
       - uses: pirj/setup-bakerish@v2
 
-      - name: Run bake in background + dump VM state mid-flight
+      - name: Run bake in background + poke HMP hostfwd_add directly
         shell: bash
         run: |
           set -x
           VM_NAME=$(basename "$(pwd)")
-          # rlock writes VMs under $AQ_STATE_DIR which defaults to
-          # ~/.local/share/aq. aq sets BASE_DIR=~/.local/share/aq.
           VM_DIR="$HOME/.local/share/aq/$VM_NAME"
 
           mkdir -p /tmp/diag
-          # `bake run` in background so we can inspect while it hangs.
           (
-            time bake run -- bash -c 'echo BAKE_RUN_INSIDE_OK; hostname; uname -a'
+            time bake run -- bash -c 'echo BAKE_RUN_INSIDE_OK; hostname'
           ) > /tmp/diag/bake-stdout.log 2>&1 &
           BAKE_PID=$!
-          echo "bake pid: $BAKE_PID"
 
-          # Wait for VM dir + qemu process to materialise.
+          # Wait for qemu pidfile, then ~30s for live restore + steady state.
           for i in $(seq 1 90); do
             [ -f "$VM_DIR/process.pid" ] && break
             sleep 1
           done
-
-          echo "=== vm dir state after qemu spawn ==="
-          ls -la "$VM_DIR" || true
-
-          # Give qemu ~30 sec to do the live restore + reach steady state.
           sleep 30
 
-          echo "=== bake-stdout.log so far ==="
-          cat /tmp/diag/bake-stdout.log || true
-
-          echo "=== qemu process tree ==="
-          QEMU_PID=$(cat "$VM_DIR/process.pid" 2>/dev/null || echo)
-          echo "qemu pid file: $QEMU_PID"
-          ps -ef | grep -E "qemu|socat|tio" | grep -v grep || true
-
-          echo "=== ss / netstat on host (looking for SSH hostfwd port) ==="
-          ss -tlnp 2>&1 | head -40 || true
-
-          echo "=== ssh-port.conf ==="
-          cat "$VM_DIR/ssh-port.conf" 2>/dev/null || echo "(absent)"
-          echo "=== hostfwd.conf ==="
-          cat "$VM_DIR/hostfwd.conf" 2>/dev/null || echo "(absent)"
-
-          echo "=== qmp query-status / query-migrate / query-name ==="
-          {
-            printf '%s\n' \
-              '{"execute":"qmp_capabilities"}' \
-              '{"execute":"query-status"}' \
-              '{"execute":"query-migrate"}' \
-              '{"execute":"query-name"}'
-            sleep 3
-          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/qmp.sock" 2>&1 || echo "(qmp connect failed)"
-
-          echo "=== HMP info status / info migrate / info network ==="
-          {
-            printf '%s\n' 'info status' 'info migrate' 'info network' 'info chardev' 'quit'
-            sleep 2
-          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1 || echo "(control connect failed)"
-
-          echo "=== serial console drain (4 sec of read) ==="
-          timeout 4 socat -u UNIX-CONNECT:"$VM_DIR/command.sock" STDOUT 2>&1 | tail -c 8192 | xxd | tail -100 || true
-
-          echo "=== nc probe of SSH hostfwd port ==="
-          SSH_PORT=$(cat "$VM_DIR/ssh-port.conf" 2>/dev/null | tr -d '[:space:]')
-          if [ -n "$SSH_PORT" ]; then
-            echo "trying nc -vz localhost $SSH_PORT"
-            timeout 3 nc -vz localhost "$SSH_PORT" 2>&1 || echo "nc returned non-zero"
-            echo "trying ssh -v ... root@localhost:$SSH_PORT (3s timeout)"
-            timeout 5 ssh -v \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=3 \
-              -o BatchMode=yes \
-              -p "$SSH_PORT" \
-              root@localhost "echo SSH_OK; uname -a; hostname; ps -ef | head" 2>&1 || echo "ssh returned non-zero"
-          else
-            echo "(no SSH_PORT — can't probe)"
-          fi
-
-          echo "=== one more nudge of serial — try writing newline ==="
-          { echo ''; sleep 2; } | timeout 4 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | tail -c 4096 | xxd | tail -50 || true
-
-          echo "=== final bake-stdout.log (will likely still be stuck) ==="
+          echo "=== bake-stdout.log ==="
           cat /tmp/diag/bake-stdout.log
 
-          # Best-effort kill of the hanging bake run + qemu.
-          kill $BAKE_PID 2>/dev/null || true
-          [ -n "$QEMU_PID" ] && kill -9 "$QEMU_PID" 2>/dev/null || true
-          sleep 2
+          echo "=== qemu cmdline ==="
+          QEMU_PID=$(cat "$VM_DIR/process.pid")
+          tr '\0' ' ' < /proc/$QEMU_PID/cmdline 2>/dev/null | fold -w 120
+          echo
 
-      - name: Upload diag artifacts
+          echo "=== HMP info network (before our hostfwd_add poke) ==="
+          {
+            printf '%s\n' 'info network' 'info status'
+            sleep 2
+          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+
+          echo "=== HMP hostfwd_add tcp::9999-:22 — try variant 1 (no netdev id) ==="
+          {
+            printf '%s\n' 'hostfwd_add tcp::9999-:22'
+            sleep 2
+          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+
+          echo "=== HMP info network — did v1 take effect? ==="
+          { printf '%s\n' 'info network'; sleep 2; } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+
+          echo "=== HMP hostfwd_add user.0 tcp::9998-:22 — try variant 2 (user.0 prefix) ==="
+          {
+            printf '%s\n' 'hostfwd_add user.0 tcp::9998-:22'
+            sleep 2
+          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+
+          echo "=== HMP info network — did v2 take effect? ==="
+          { printf '%s\n' 'info network'; sleep 2; } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+
+          echo "=== ss -tlnp for ports 9998-9999 ==="
+          ss -tlnp 2>&1 | grep -E "9998|9999" || echo "(none listening)"
+
+          echo "=== HMP help hostfwd ==="
+          {
+            printf '%s\n' 'help hostfwd_add' 'help hostfwd_remove'
+            sleep 2
+          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+
+          echo "=== QMP query-commands for hostfwd-relevant commands ==="
+          {
+            printf '%s\n' '{"execute":"qmp_capabilities"}' \
+                          '{"execute":"query-commands"}'
+            sleep 2
+          } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/qmp.sock" 2>&1 | tr ',' '\n' | grep -iE "hostfwd|net" | head
+
+          # Cleanup
+          kill $BAKE_PID 2>/dev/null || true
+          kill -9 $QEMU_PID 2>/dev/null || true
+
+      - name: Upload
         uses: actions/upload-artifact@v4
         if: always()
         with:
           name: diagnose-warm-artifacts
-          path: |
-            /tmp/diag/
-            /home/runner/.local/share/aq/bakerish-rails-pg-example/
+          path: /tmp/diag/
