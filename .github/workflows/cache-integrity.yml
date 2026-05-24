@@ -33,8 +33,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      sha256: ${{ steps.fingerprint.outputs.sha256 }}
-      size:   ${{ steps.fingerprint.outputs.size }}
+      sha256:        ${{ steps.fingerprint.outputs.sha256 }}
+      size:          ${{ steps.fingerprint.outputs.size }}
+      cpu_model:     ${{ steps.fingerprint.outputs.cpu_model }}
+      cpu_flags_sha: ${{ steps.fingerprint.outputs.cpu_flags_sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
@@ -43,7 +45,7 @@ jobs:
       - name: Cold path
         run: time bake run -- bash -c 'echo COLD_OK'
 
-      - name: Fingerprint memory.bin.zst (save side)
+      - name: Fingerprint memory.bin.zst (save side) + CPU info
         id: fingerprint
         run: |
           set -ex
@@ -51,10 +53,16 @@ jobs:
           [ -n "$LIVE_MEM" ] || { echo 'no memory.bin.zst in cache'; exit 1; }
           SHA=$(sha256sum "$LIVE_MEM" | cut -d' ' -f1)
           SIZE=$(stat -c '%s' "$LIVE_MEM")
+          CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')
+          CPU_FLAGS_SHA=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -d' ' -f1)
           echo "SAVE_SHA=$SHA"
           echo "SAVE_SIZE=$SIZE"
-          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
-          echo "size=$SIZE"   >> "$GITHUB_OUTPUT"
+          echo "SAVE_CPU_MODEL=$CPU_MODEL"
+          echo "SAVE_CPU_FLAGS_SHA=$CPU_FLAGS_SHA"
+          echo "sha256=$SHA"                 >> "$GITHUB_OUTPUT"
+          echo "size=$SIZE"                  >> "$GITHUB_OUTPUT"
+          echo "cpu_model=$CPU_MODEL"        >> "$GITHUB_OUTPUT"
+          echo "cpu_flags_sha=$CPU_FLAGS_SHA" >> "$GITHUB_OUTPUT"
           zstd -t "$LIVE_MEM"
 
   restore:
@@ -68,25 +76,34 @@ jobs:
           cache-key-prefix: ${{ env.CACHE_KEY }}
           cache-restore-only: 'true'
 
-      - name: Fingerprint memory.bin.zst (restore side) + compare
+      - name: Fingerprint memory.bin.zst (restore side) + CPU diff + bake run
         run: |
           set -ex
           LIVE_MEM=$(find "$HOME/.local/share/aq/cache" -name 'memory.bin.zst' | head -1)
           [ -n "$LIVE_MEM" ] || { echo 'cache restore did not deliver memory.bin.zst'; exit 1; }
           SHA=$(sha256sum "$LIVE_MEM" | cut -d' ' -f1)
           SIZE=$(stat -c '%s' "$LIVE_MEM")
+          CPU_MODEL=$(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')
+          CPU_FLAGS_SHA=$(grep -m1 '^flags' /proc/cpuinfo | sha256sum | cut -d' ' -f1)
           echo "RESTORE_SHA=$SHA"
           echo "RESTORE_SIZE=$SIZE"
+          echo "RESTORE_CPU_MODEL=$CPU_MODEL"
+          echo "RESTORE_CPU_FLAGS_SHA=$CPU_FLAGS_SHA"
           echo "SAVE_SHA=${{ needs.save.outputs.sha256 }}"
           echo "SAVE_SIZE=${{ needs.save.outputs.size }}"
-          echo "=== zstd -t on restored ==="
-          zstd -t "$LIVE_MEM"
+          echo "SAVE_CPU_MODEL=${{ needs.save.outputs.cpu_model }}"
+          echo "SAVE_CPU_FLAGS_SHA=${{ needs.save.outputs.cpu_flags_sha }}"
           if [ "$SHA" != "${{ needs.save.outputs.sha256 }}" ]; then
-            echo "CORRUPTION CONFIRMED — sha256 differs"
-            exit 1
+            echo "FILE CORRUPTION: sha256 differs"; exit 1
           fi
-          if [ "$SIZE" != "${{ needs.save.outputs.size }}" ]; then
-            echo "SIZE DIFFERS"
-            exit 1
+          if [ "$CPU_MODEL" != "${{ needs.save.outputs.cpu_model }}" ]; then
+            echo "CPU MODEL DIFFERS between save and restore runners"
           fi
-          echo "memory.bin.zst is byte-perfect across actions/cache round-trip"
+          if [ "$CPU_FLAGS_SHA" != "${{ needs.save.outputs.cpu_flags_sha }}" ]; then
+            echo "CPU FLAGS DIFFER between save and restore runners"
+          fi
+
+      - name: Actual cross-job warm bake run
+        run: |
+          set -ex
+          time bake run -- bash -c 'echo WARM_OK; hostname; ps aux | grep -E "postgres|dockerd" | wc -l'
