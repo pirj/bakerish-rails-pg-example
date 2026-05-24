@@ -28,7 +28,7 @@ jobs:
           # in aq/rlock/bakeri.sh means the old cached layers are no
           # longer compatible. Lets us force-cold subsequent runs
           # without having to delete cache entries by hand.
-          cache-key-prefix: 'bakeri-v2.5.20a'
+          cache-key-prefix: 'bakeri-v2.5.20b'
 
       - name: bake run — verify the warm DB
         run: |
