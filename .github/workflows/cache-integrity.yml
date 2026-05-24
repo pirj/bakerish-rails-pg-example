@@ -104,6 +104,30 @@ jobs:
           fi
 
       - name: Actual cross-job warm bake run
+        id: warm
+        continue-on-error: true
         run: |
           set -ex
           time bake run -- bash -c 'echo WARM_OK; hostname; ps aux | grep -E "postgres|dockerd" | wc -l'
+
+      - name: Post-warm guest probe via serial console
+        if: steps.warm.outcome == 'failure'
+        run: |
+          set -x
+          VM_NAME=$(basename "$(pwd)")
+          VM_DIR="$HOME/.local/share/aq/$VM_NAME"
+          [ -S "$VM_DIR/command.sock" ] || { echo "no command.sock — guest qemu is gone"; exit 0; }
+          # Live-restored VM is alive but sshd refuses logins.
+          # Use serial console (root auto-logged-in or login as root) to inspect.
+          {
+            printf '\n'
+            sleep 1
+            printf 'root\n'
+            sleep 2
+            printf 'echo MARK_DATE; date; echo MARK_UPTIME; cat /proc/uptime; echo MARK_NOLOGIN_TEST; ls -la /etc/nologin 2>&1; cat /etc/nologin 2>&1; echo MARK_CLOCKSOURCE; cat /sys/devices/system/clocksource/clocksource0/{available,current}_clocksource 2>&1; echo MARK_PAM_SSHD; cat /etc/pam.d/sshd 2>&1; echo MARK_SECURITY_DIR; ls /etc/security/ 2>&1; echo MARK_SSHD_PROC; ps aux | grep sshd; echo MARK_DMESG_TAIL; dmesg | tail -30; echo MARK_DONE\n'
+            sleep 6
+          } | timeout 20 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 || true
+
+      - name: Fail if warm failed
+        if: steps.warm.outcome == 'failure'
+        run: exit 1
