@@ -1,12 +1,20 @@
-# Diagnostic: warm-path live-restore phase 3.
+# Diagnostic phase 4: same-job warm-restore (no GH cache in between).
 #
-# Phase 1: qemu is running, hostfwd is added (ss shows :PORT LISTEN
-#   by qemu-system-x86_64), but nc/ssh from host get Connection
-#   refused. That's qemu RST'ing on behalf of guest = guest's :22
-#   isn't reachable.
-# Phase 2: confirmed hostfwd_add works syntactically.
-# Phase 3 (this): poke the guest via serial console. Is the guest
-#   alive at all? Is sshd running? Is eth0 configured?
+# Phase 1-3 found warm-path live-restore flaky: sometimes "VM did not
+# transition to running", sometimes hostfwd works but guest sshd not
+# reachable. Different outcomes with the same cached memory.bin.zst.
+#
+# Theory split:
+# - If we live-restore IN THE SAME JOB (no actions/cache round-trip in
+#   between), and it still flakes / fails — qemu's restore-from-file
+#   is the bug.
+# - If it works in same-job — GH cache action (tar pack/unpack, sparse
+#   handling, permissions) is corrupting memory.bin.zst.
+#
+# This workflow does cold path, then manually stages the just-captured
+# docker-compose memory.bin.zst as the VM's incoming-memory.bin.zst
+# and forces a warm restart. Captures sha256 before/after, zstd -t
+# integrity check, and ssh probe.
 
 name: diagnose-warm
 
@@ -19,75 +27,79 @@ permissions:
 jobs:
   diagnose:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
       - uses: pirj/setup-bakerish@v2
+        with:
+          cache-restore-only: 'true'  # don't save; we don't want to pollute the validation cache
 
-      - name: Background bake + serial-console probe of live-restored guest
-        shell: bash
+      - name: Cold path bake run
         run: |
-          set -x
+          set -ex
+          time bake run -- bash -c 'echo COLD_OK; hostname; ps aux | grep -c sshd'
+
+      - name: Locate docker-compose live snapshot in cache
+        id: snap
+        run: |
+          set -ex
           VM_NAME=$(basename "$(pwd)")
           VM_DIR="$HOME/.local/share/aq/$VM_NAME"
+          # rlock writes cache under $RL_CACHE_DIR; setup-bakerish caches
+          # ~/.local/share/aq/cache/ (the *layer cache root*).
+          RL_CACHE=$HOME/.local/share/aq/cache
+          echo "=== rl cache tree ==="
+          find "$RL_CACHE" -type d | head -30 || true
+          find "$RL_CACHE" -name 'memory.bin*' -exec ls -la {} \; || true
 
-          mkdir -p /tmp/diag
-          ( time bake run -- bash -c 'echo INSIDE_OK; hostname' ) > /tmp/diag/bake.log 2>&1 &
-          BAKE_PID=$!
+          LIVE_MEM=$(find "$RL_CACHE" -name 'memory.bin.zst' | head -1)
+          [ -n "$LIVE_MEM" ] || { echo "no live snapshot found"; exit 1; }
+          echo "LIVE_MEM=$LIVE_MEM"
+          echo "live_mem=$LIVE_MEM" >> "$GITHUB_OUTPUT"
 
-          for i in $(seq 1 90); do
-            [ -f "$VM_DIR/process.pid" ] && break
-            sleep 1
-          done
-          sleep 30  # let live-restore complete
+          echo "=== zstd -t integrity check (cold-captured file) ==="
+          zstd -t "$LIVE_MEM"
 
-          QEMU_PID=$(cat "$VM_DIR/process.pid")
-          echo "=== bake.log so far ==="
-          cat /tmp/diag/bake.log
+          echo "=== sha256 + size ==="
+          sha256sum "$LIVE_MEM"
+          stat -c '%s %n' "$LIVE_MEM"
 
-          echo "=== host: ss for SSH port ==="
-          SSH_PORT=$(cat "$VM_DIR/ssh-port.conf" | tr -d ' \n')
-          ss -tlnp 2>&1 | grep -E ":$SSH_PORT|qemu-system" | head
+      - name: Force warm restart from same memory.bin.zst (no GH cache hop)
+        run: |
+          set -ex
+          VM_NAME=$(basename "$(pwd)")
+          VM_DIR="$HOME/.local/share/aq/$VM_NAME"
+          LIVE_MEM='${{ steps.snap.outputs.live_mem }}'
 
-          echo "=== host: nc :$SSH_PORT ==="
-          timeout 3 nc -vz 127.0.0.1 "$SSH_PORT" 2>&1 || true
+          echo "=== sha256 of source memory.bin.zst ==="
+          SHA_SRC=$(sha256sum "$LIVE_MEM" | cut -d' ' -f1)
+          echo "SHA_SRC=$SHA_SRC"
 
-          echo "=== SERIAL drain — passive (5s) ==="
-          timeout 5 socat -u UNIX-CONNECT:"$VM_DIR/command.sock" STDOUT 2>&1 | tail -c 4096 | xxd | tail -40 || true
+          echo "=== aq stop ==="
+          aq stop "$VM_NAME" || true
+          sleep 2
 
-          echo "=== SERIAL nudge — send Enter, wait 2s ==="
-          {
-            printf '\n'
-            sleep 2
-          } | timeout 4 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | tail -c 4096 | xxd | tail -40 || true
+          # Stage memory.bin.zst as incoming for live-restore.
+          cp "$LIVE_MEM" "$VM_DIR/incoming-memory.bin.zst"
 
-          echo "=== SERIAL nudge — login as root, run diag inside ==="
-          {
-            printf '\n'
-            sleep 1
-            printf 'root\n'
-            sleep 2
-            printf 'echo MARKER_GUEST_OK; date; hostname; ip -4 a show eth0; ss -tlnp; ps aux | grep -E "sshd|docker" | head\n'
-            sleep 4
-            printf 'echo MARKER_GUEST_END\n'
-            sleep 2
-          } | timeout 15 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | tail -c 8192
+          echo "=== sha256 of staged incoming ==="
+          SHA_STAGED=$(sha256sum "$VM_DIR/incoming-memory.bin.zst" | cut -d' ' -f1)
+          echo "SHA_STAGED=$SHA_STAGED"
+          [ "$SHA_SRC" = "$SHA_STAGED" ] || { echo "STAGED FILE DIFFERS FROM SOURCE"; exit 1; }
 
-          echo "=== ssh -v probe (after guest poke) ==="
-          timeout 6 ssh -v \
-            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=4 -o BatchMode=yes \
-            -p "$SSH_PORT" root@localhost "echo SSH_OK_AT_$(date +%s); uname -a" 2>&1 | tail -30 || true
+          echo "=== zstd -t on staged ==="
+          zstd -t "$VM_DIR/incoming-memory.bin.zst"
 
-          # Cleanup. NO `quit` in HMP — that just kills the qemu we still
-          # need to finish the background bake.
-          kill $BAKE_PID 2>/dev/null || true
-          kill -9 $QEMU_PID 2>/dev/null || true
-
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: diagnose-warm-artifacts
-          path: /tmp/diag/
+          echo "=== aq start ==="
+          if aq start "$VM_NAME"; then
+            echo "AQ_START_OK"
+            SSH_PORT=$(cat "$VM_DIR/ssh-port.conf" | tr -d ' \n')
+            echo "=== ssh probe ==="
+            timeout 10 ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=5 -o BatchMode=yes \
+              -p "$SSH_PORT" root@localhost "echo SSH_OK_WARM_SAMEJOB; uname -a; hostname; ps aux | grep -E 'sshd|postgres|dockerd' | head" 2>&1 || echo "ssh exit non-zero"
+          else
+            echo "AQ_START_FAILED_SAMEJOB"
+            exit 1
+          fi
