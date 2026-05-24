@@ -2,11 +2,6 @@
 # to-end. Runs on ubuntu-latest: the path adopters will actually use.
 # First run on a given cache key = cold (aq's base-build runs); subsequent
 # runs on the same key = warm (snapshot layer cache restored).
-#
-# NOTE: aq's first-cold base-build currently hangs on the Alpine ISO
-# GRUB autoselect under Linux/KVM (see aq/ROADMAP). The
-# diagnose-kvm.yml sibling workflow exists to triage it. Until that's
-# resolved, this workflow's cold runs will time out.
 
 name: ci
 
@@ -28,6 +23,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: pirj/setup-bakerish@v2
+        with:
+          # Bump suffix to invalidate cache when a snapshot-format change
+          # in aq/rlock/bakeri.sh means the old cached layers are no
+          # longer compatible. Lets us force-cold subsequent runs
+          # without having to delete cache entries by hand.
+          cache-key-prefix: 'bakeri-v2.5.16'
 
       - name: bake run — verify the warm DB
         run: |
