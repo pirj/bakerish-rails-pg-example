@@ -285,6 +285,32 @@ jobs:
             ) | timeout 15 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -200
           fi
 
+          echo "=== FIX TEST: disable PerSourcePenalties, restart sshd, re-probe ==="
+          # If PerSourcePenalties is the cause of 'Not allowed at this time',
+          # disabling it should let ssh work immediately.
+          if [ -S "$VM_DIR/command.sock" ]; then
+            (
+              sleep 0.5
+              printf '\r'
+              sleep 0.3
+              printf 'echo "PerSourcePenalties no" >> /etc/ssh/sshd_config; rc-service sshd restart 2>&1\r'
+              sleep 3
+              printf 'echo POST_RESTART; tail -5 /var/log/messages\r'
+              sleep 1
+            ) | timeout 10 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -50
+          fi
+          echo "--- now probing ssh from host ---"
+          # Find the hostfwd port from qemu cmdline
+          HOSTPORT=$(ps -fp "$(cat $VM_DIR/process.pid 2>/dev/null)" 2>/dev/null | grep -oE "hostfwd=tcp::[0-9]+-:22" | grep -oE "[0-9]+" | head -1)
+          if [ -n "$HOSTPORT" ]; then
+            echo "Host port: $HOSTPORT"
+            for i in 1 2 3 4 5; do
+              echo "--- probe $i ---"
+              echo "" | timeout 3 nc -v 127.0.0.1 "$HOSTPORT" 2>&1 | head -5
+              sleep 1
+            done
+          fi
+
           echo "=== qemu-nbd mount of storage.qcow2 (look at guest filesystem) ==="
           # Need qemu to release the disk first
           if [ -f "$VM_DIR/process.pid" ]; then
