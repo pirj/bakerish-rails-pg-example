@@ -63,7 +63,7 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
-      - name: Host fingerprint + enable KVM ftrace (find failing MSR)
+      - name: Host fingerprint + bpftrace on kvm_set_msr
         run: |
           echo "=== /proc/cpuinfo (first core only) ==="
           awk '/^processor/{n++} n==1' /proc/cpuinfo
@@ -71,23 +71,30 @@ jobs:
           uname -a
 
           set -x
-          # Capture qemu stderr — sometimes has the per-MSR error too
+          # Capture qemu stderr
           sed -i 's|${AQ_QEMU_EXTRA_ARGS:-}|${AQ_QEMU_EXTRA_ARGS:-} 2>>/tmp/qemu-stderr.log|' /home/runner/aq/aq
           grep -nE "AQ_QEMU_EXTRA_ARGS|\\-cpu " /home/runner/aq/aq | head
 
-          # KVM ftrace: every guest MSR access logged with exception flag.
-          # Filter to write events with exception=1 (failed writes) to keep
-          # the buffer small. Cross-VM warm restore should generate the
-          # offending MSR write trace here.
-          echo "=== kvm trace events available ==="
-          sudo ls /sys/kernel/debug/tracing/events/kvm/ 2>&1 | head -30 || true
-          echo "=== enable kvm_msr (writes) + kvm_inj_exception ==="
-          sudo bash -c 'echo 1 > /sys/kernel/debug/tracing/events/kvm/kvm_msr/enable' || true
-          sudo bash -c 'echo 1 > /sys/kernel/debug/tracing/events/kvm/kvm_inj_exception/enable' || true
-          sudo bash -c 'echo 1 > /sys/kernel/debug/tracing/tracing_on' || true
-          echo "Trace status:"
-          sudo cat /sys/kernel/debug/tracing/tracing_on 2>&1 || true
-          sudo cat /sys/kernel/debug/tracing/events/kvm/kvm_msr/enable 2>&1 || true
+          # bpftrace on __kvm_set_msr / kvm_set_msr_common — these are the
+          # kernel functions invoked by KVM_SET_MSRS ioctl. Logs the MSR
+          # index and value for each attempted write, including return code.
+          # `__kvm_set_msr` is the inner function that does the actual work.
+          sudo apt-get install -y bpftrace 2>&1 | tail -3
+          # List kprobes that match kvm_set_msr*
+          sudo bpftrace -lv 'kprobe:kvm_set_msr*' 2>&1 | head -10 || true
+          # Start bpftrace in background, capture failed MSR sets.
+          sudo bpftrace -e '
+            kretprobe:__kvm_set_msr / retval != 0 / {
+              printf("KVM_SET_MSR_FAIL pid=%d msr=0x%x ret=%d\n", pid, arg0, retval);
+            }
+            kretprobe:kvm_set_msr_common / retval != 0 / {
+              printf("kvm_set_msr_common_FAIL pid=%d msr=0x%x ret=%d\n", pid, arg0, retval);
+            }
+          ' > /tmp/bpftrace.log 2>&1 &
+          echo $! > /tmp/bpftrace.pid
+          sleep 2
+          echo "bpftrace started, pid=$(cat /tmp/bpftrace.pid)"
+          ps -p "$(cat /tmp/bpftrace.pid)" 2>&1 || echo "bpftrace died"
 
       - name: Cross-job warm bake run
         id: warm
@@ -156,14 +163,17 @@ jobs:
             echo "(qemu-stderr.log missing — sed patch didn't take?)"
           fi
 
-          echo "=== KVM ftrace dump (kvm_msr writes with exception=1 first) ==="
-          sudo bash -c 'echo 0 > /sys/kernel/debug/tracing/tracing_on' 2>&1 || true
-          # Failed writes have exception=1 in the kvm_msr event
-          sudo grep "exception 1" /sys/kernel/debug/tracing/trace 2>&1 | head -50 || true
-          echo "--- last 50 lines of full trace (all events) ---"
-          sudo tail -200 /sys/kernel/debug/tracing/trace 2>&1 | head -100 || true
-          echo "--- kvm_inj_exception events (CPU exceptions injected to guest) ---"
-          sudo grep "kvm_inj_exception" /sys/kernel/debug/tracing/trace 2>&1 | head -30 || true
+          echo "=== bpftrace output (failed MSR writes from qemu via KVM_SET_MSRS) ==="
+          if [ -f /tmp/bpftrace.pid ]; then
+            sudo kill "$(cat /tmp/bpftrace.pid)" 2>&1 || true
+            sleep 1
+          fi
+          if [ -f /tmp/bpftrace.log ]; then
+            wc -l /tmp/bpftrace.log
+            cat /tmp/bpftrace.log
+          else
+            echo "(bpftrace.log missing)"
+          fi
 
           echo "=== qemu process state ==="
           ps -fp "$(cat $VM_DIR/process.pid 2>/dev/null)" 2>&1 || true
