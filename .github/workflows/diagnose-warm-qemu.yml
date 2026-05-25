@@ -39,14 +39,6 @@ jobs:
         with:
           cache-key-prefix: ${{ env.CACHE_KEY }}
           no-snapshot-compress: 'true'
-      - name: Patch aq -cpu host -> -cpu qemu64 (SAVE side, test-only)
-        run: |
-          set -x
-          # User-authorized test: switch to qemu64 (qemu's safest x86_64
-          # baseline CPU model — no host-specific MSRs/features). Each
-          # run uses a unique CACHE_KEY so this change is isolated.
-          sed -i 's|-cpu host|-cpu qemu64|g' /home/runner/aq/aq
-          grep -n "\\-cpu " /home/runner/aq/aq | head -5
       - run: time bake run -- bash -c 'echo SAVE_COLD_OK'
 
   restore:
@@ -71,24 +63,31 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
-      - name: Host fingerprint + patch aq -cpu host -> -cpu host,kvm=off (RESTORE)
+      - name: Host fingerprint + enable KVM ftrace (find failing MSR)
         run: |
           echo "=== /proc/cpuinfo (first core only) ==="
           awk '/^processor/{n++} n==1' /proc/cpuinfo
           echo "=== kernel ==="
           uname -a
-          echo "=== KVM module ==="
-          modinfo kvm 2>&1 | head -10 || true
-          modinfo kvm_amd 2>&1 | head -10 || true
-          modinfo kvm_intel 2>&1 | head -10 || true
 
           set -x
-          sed -i 's|-cpu host|-cpu qemu64|g' /home/runner/aq/aq
-          # Capture guest kernel/serial to file — gives us boot/post-resume
-          # output if warm restore brings guest to a hung/panic state.
-          sed -i 's|-serial unix:|-serial file:/tmp/qemu-serial.log -serial unix:|g' /home/runner/aq/aq
+          # Capture qemu stderr — sometimes has the per-MSR error too
           sed -i 's|${AQ_QEMU_EXTRA_ARGS:-}|${AQ_QEMU_EXTRA_ARGS:-} 2>>/tmp/qemu-stderr.log|' /home/runner/aq/aq
-          grep -nE "\\-cpu |\\-serial |AQ_QEMU_EXTRA_ARGS" /home/runner/aq/aq | head
+          grep -nE "AQ_QEMU_EXTRA_ARGS|\\-cpu " /home/runner/aq/aq | head
+
+          # KVM ftrace: every guest MSR access logged with exception flag.
+          # Filter to write events with exception=1 (failed writes) to keep
+          # the buffer small. Cross-VM warm restore should generate the
+          # offending MSR write trace here.
+          echo "=== kvm trace events available ==="
+          sudo ls /sys/kernel/debug/tracing/events/kvm/ 2>&1 | head -30 || true
+          echo "=== enable kvm_msr (writes) + kvm_inj_exception ==="
+          sudo bash -c 'echo 1 > /sys/kernel/debug/tracing/events/kvm/kvm_msr/enable' || true
+          sudo bash -c 'echo 1 > /sys/kernel/debug/tracing/events/kvm/kvm_inj_exception/enable' || true
+          sudo bash -c 'echo 1 > /sys/kernel/debug/tracing/tracing_on' || true
+          echo "Trace status:"
+          sudo cat /sys/kernel/debug/tracing/tracing_on 2>&1 || true
+          sudo cat /sys/kernel/debug/tracing/events/kvm/kvm_msr/enable 2>&1 || true
 
       - name: Cross-job warm bake run
         id: warm
@@ -157,13 +156,14 @@ jobs:
             echo "(qemu-stderr.log missing — sed patch didn't take?)"
           fi
 
-          echo "=== /tmp/qemu-serial.log (guest ttyS0 from t=0) ==="
-          if [ -f /tmp/qemu-serial.log ]; then
-            wc -c /tmp/qemu-serial.log
-            cat /tmp/qemu-serial.log
-          else
-            echo "(qemu-serial.log missing)"
-          fi
+          echo "=== KVM ftrace dump (kvm_msr writes with exception=1 first) ==="
+          sudo bash -c 'echo 0 > /sys/kernel/debug/tracing/tracing_on' 2>&1 || true
+          # Failed writes have exception=1 in the kvm_msr event
+          sudo grep "exception 1" /sys/kernel/debug/tracing/trace 2>&1 | head -50 || true
+          echo "--- last 50 lines of full trace (all events) ---"
+          sudo tail -200 /sys/kernel/debug/tracing/trace 2>&1 | head -100 || true
+          echo "--- kvm_inj_exception events (CPU exceptions injected to guest) ---"
+          sudo grep "kvm_inj_exception" /sys/kernel/debug/tracing/trace 2>&1 | head -30 || true
 
           echo "=== qemu process state ==="
           ps -fp "$(cat $VM_DIR/process.pid 2>/dev/null)" 2>&1 || true
