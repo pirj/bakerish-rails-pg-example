@@ -36,6 +36,11 @@ jobs:
     env:
       AQ_QEMU_LOG_FILE: /tmp/qemu.log
       AQ_NO_SNAPSHOT_COMPRESS: '1'
+      # Trace events write to the file set by -D, captured via AQ_QEMU_LOG_FILE.
+      # Broad patterns to catch any migration-related event qemu emits at incoming
+      # load time. If file is empty, qemu's trace backend isn't compiled in (rare)
+      # OR the migration code path is not invoked at all.
+      AQ_QEMU_EXTRA_ARGS: "--trace migration* --trace loadvm* --trace vmstate* --trace qemu_file*"
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
