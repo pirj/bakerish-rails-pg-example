@@ -49,15 +49,8 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
-      - name: Patch aq to add serial-to-file before unix socket
-        run: |
-          set -x
-          # Insert a `-serial file:/tmp/qemu-serial.log` BEFORE the existing
-          # `-serial unix:` so ttyS0 (the kernel console) writes to the file.
-          # The unix socket becomes ttyS1 (kept for aq compatibility, unused
-          # by bake-run anyway). Captures full guest boot from t=0.
-          sed -i 's|-serial unix:|-serial file:/tmp/qemu-serial.log -serial unix:|' /home/runner/aq/aq
-          grep -- "-serial " /home/runner/aq/aq | head -5
+      - name: Probe nothing (no patch this run — we want command.sock=ttyS0)
+        run: echo "leaving aq unmodified so command.sock remains ttyS0 for direct getty probe"
 
       - name: Cross-job warm bake run
         id: warm
@@ -118,12 +111,21 @@ jobs:
           echo "=== Incoming memory file existence ==="
           ls -la "$VM_DIR/incoming-memory.bin.zst" "$VM_DIR/incoming-memory.bin" 2>&1 || true
 
-          echo "=== /tmp/qemu-serial.log (guest kernel from t=0) ==="
-          if [ -f /tmp/qemu-serial.log ]; then
-            wc -c /tmp/qemu-serial.log
-            cat /tmp/qemu-serial.log
-          else
-            echo "(qemu-serial.log missing — patch didn't take effect?)"
+          echo "=== qmp query-cpus-fast (are CPUs running?) ==="
+          if [ -S "$VM_DIR/qmp.sock" ]; then
+            {
+              printf '%s\n' '{"execute":"qmp_capabilities"}'
+              printf '%s\n' '{"execute":"query-cpus-fast"}'
+              printf '%s\n' '{"execute":"human-monitor-command","arguments":{"command-line":"info registers"}}'
+              printf '%s\n' '{"execute":"human-monitor-command","arguments":{"command-line":"info roms"}}'
+              printf '%s\n' '{"execute":"human-monitor-command","arguments":{"command-line":"info block"}}'
+              sleep 2
+            } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/qmp.sock" 2>&1
+          fi
+
+          echo "=== serial probe (send newline, capture ~3s) ==="
+          if [ -S "$VM_DIR/command.sock" ]; then
+            ( printf '\n\n'; sleep 3 ) | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -100 || true
           fi
 
       - name: Fail if warm failed
