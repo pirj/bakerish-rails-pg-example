@@ -1,0 +1,96 @@
+# Targeted diagnostic for the cross-job warm silent-cold-boot.
+# Saves the cached-warm cache from a fresh cold run, then in a
+# second job restores it AND points aq at a captured qemu log
+# file via AQ_QEMU_LOG_FILE. After bake-run fails, dump the log
+# and the full qmp query-migrate response.
+
+name: diagnose-warm-qemu
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CACHE_KEY: warm-q-${{ github.run_id }}
+
+jobs:
+  save:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          cache-key-prefix: ${{ env.CACHE_KEY }}
+      - run: time bake run -- bash -c 'echo SAVE_COLD_OK'
+
+  restore:
+    needs: save
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      AQ_QEMU_LOG_FILE: /tmp/qemu.log
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          cache-key-prefix: ${{ env.CACHE_KEY }}
+          cache-restore-only: 'true'
+
+      - name: Cross-job warm bake run
+        id: warm
+        continue-on-error: true
+        run: |
+          set -ex
+          export AQ_QEMU_LOG_FILE
+          time bake run -- bash -c 'echo WARM_OK; hostname; ps aux | grep -E "postgres|dockerd" | wc -l'
+
+      - name: Dump qemu.log + qmp query-migrate
+        if: always()
+        run: |
+          set -x
+          VM_NAME=$(basename "$(pwd)")
+          VM_DIR="$HOME/.local/share/aq/$VM_NAME"
+
+          echo "=== /tmp/qemu.log ==="
+          if [ -f /tmp/qemu.log ]; then
+            cat /tmp/qemu.log
+          else
+            echo "(no qemu.log captured — AQ_QEMU_LOG_FILE didn't take effect?)"
+          fi
+
+          echo "=== qmp query-migrate (full json) ==="
+          if [ -S "$VM_DIR/qmp.sock" ]; then
+            {
+              printf '%s\n' '{"execute":"qmp_capabilities"}'
+              printf '%s\n' '{"execute":"query-migrate"}'
+              printf '%s\n' '{"execute":"query-migrate-capabilities"}'
+              printf '%s\n' '{"execute":"query-migrate-parameters"}'
+              printf '%s\n' '{"execute":"query-status"}'
+              sleep 2
+            } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/qmp.sock" 2>&1
+          else
+            echo "(qmp.sock missing — qemu gone)"
+          fi
+
+          echo "=== HMP info migrate verbose ==="
+          if [ -S "$VM_DIR/control.sock" ]; then
+            {
+              printf 'info migrate\n'
+              printf 'info migrate_capabilities\n'
+              printf 'info migrate_parameters\n'
+              printf 'info status\n'
+              sleep 2
+            } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/control.sock" 2>&1
+          fi
+
+          echo "=== VM dir contents ==="
+          ls -la "$VM_DIR" 2>&1 || true
+          echo "=== Incoming memory file existence ==="
+          ls -la "$VM_DIR/incoming-memory.bin.zst" "$VM_DIR/incoming-memory.bin" 2>&1 || true
+
+      - name: Fail if warm failed
+        if: steps.warm.outcome == 'failure'
+        run: exit 1
