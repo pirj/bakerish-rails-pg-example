@@ -286,10 +286,13 @@ jobs:
           fi
 
           echo "=== ssh-key A vs B: host side ==="
-          # What ssh key does aq have on the RESTORE host?
           ls -la "$VM_DIR/" 2>&1 | head -20
-          echo "--- host's id_rsa.pub (if any) ---"
-          find "$VM_DIR" "$HOME/.local/share/aq" -name "*.pub" -o -name "id_rsa" -o -name "ssh-key*" 2>&1 | head -10
+          echo "--- ~/.ssh/ on restore runner ---"
+          ls -la ~/.ssh/ 2>&1 | head -10
+          echo "--- ~/.ssh/id_ed25519.pub on restore runner ---"
+          cat ~/.ssh/id_ed25519.pub 2>&1 | head -3 || echo "(no id_ed25519.pub)"
+          echo "--- searching for any key files in aq/bakerish trees ---"
+          find ~/.local/share/aq ~/aq ~/bakeri.sh ~/rlock 2>/dev/null -name "*.pub" -o -name "id_*" -o -name "ssh-key*" 2>&1 | head -10
           for f in "$VM_DIR/id_rsa.pub" "$VM_DIR/ssh-key.pub" "$HOME/.local/share/aq/id_rsa.pub" "$HOME/.local/share/aq/ssh-key.pub"; do
             [ -f "$f" ] && { echo ">>> $f"; cat "$f" 2>&1; } || true
           done
@@ -341,8 +344,10 @@ jobs:
             echo "--- full ssh attempt from host (use bake's same key path) ---"
             # Try aq ssh — uses the key aq stored
             timeout 8 aq ssh "$VM_NAME" -- 'echo SSH_WORKS; hostname; uptime' 2>&1 | head -20 || true
-            echo "--- bare ssh -v (no auth required, just protocol exchange) ---"
-            ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=3 -p "$HOSTPORT" root@127.0.0.1 'echo from-ssh' 2>&1 | head -30 || true
+            echo "--- ssh -v full output (does auth succeed?) ---"
+            ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=3 -p "$HOSTPORT" root@127.0.0.1 'echo SSH_RAN; hostname; uptime' 2>&1 | tail -50 || true
+            echo "--- ssh -o PreferredAuthentications=none (protocol-only, no auth attempt) ---"
+            ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=3 -o PreferredAuthentications=none -p "$HOSTPORT" root@127.0.0.1 'echo X' 2>&1 | head -10 || true
           fi
 
           echo "=== qemu-nbd mount of storage.qcow2 (look at guest filesystem) ==="
