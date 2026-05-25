@@ -19,11 +19,14 @@ jobs:
   save:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      AQ_NO_SNAPSHOT_COMPRESS: '1'   # save memory.bin raw (no zstd) to eliminate exec:zstd -dc from the restore path
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
         with:
           cache-key-prefix: ${{ env.CACHE_KEY }}
+          no-snapshot-compress: 'true'
       - run: time bake run -- bash -c 'echo SAVE_COLD_OK'
 
   restore:
@@ -32,12 +35,14 @@ jobs:
     timeout-minutes: 15
     env:
       AQ_QEMU_LOG_FILE: /tmp/qemu.log
+      AQ_NO_SNAPSHOT_COMPRESS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
         with:
           cache-key-prefix: ${{ env.CACHE_KEY }}
           cache-restore-only: 'true'
+          no-snapshot-compress: 'true'
 
       - name: Cross-job warm bake run
         id: warm
