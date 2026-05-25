@@ -242,10 +242,30 @@ jobs:
               sleep 0.3
               printf 'echo GUEST_DIAG_BEGIN\r'
               sleep 0.3
-              printf 'ls -la /etc/nologin /etc/banner 2>&1\r'
+              printf 'echo --- sshd_config Banner/Match/AllowUsers/MaxStartups ---\r'
+              sleep 0.3
+              printf 'grep -iE "banner|match|allow|maxstartup|hostsallow|deny" /etc/ssh/sshd_config 2>&1\r'
               sleep 0.5
-              printf 'cat /etc/banner 2>&1\r'
+              printf 'echo --- /etc/issue /etc/issue.net /etc/motd ---\r'
+              sleep 0.3
+              printf 'for f in /etc/issue /etc/issue.net /etc/motd /etc/hosts.deny /etc/hosts.allow; do echo ">>> $f"; cat "$f" 2>&1; done\r'
+              sleep 1
+              printf 'echo --- which sshd + version ---\r'
+              sleep 0.3
+              printf 'which sshd; sshd -t -V 2>&1; sshd -? 2>&1 | head -5\r'
               sleep 0.5
+              printf 'echo --- netstat sshd LISTEN ---\r'
+              sleep 0.3
+              printf 'netstat -tlnp 2>&1 | grep :22; ss -tlnp 2>&1 | grep :22\r'
+              sleep 0.5
+              printf 'echo --- last 10 sshd-session log lines ---\r'
+              sleep 0.3
+              printf 'tail -10 /var/log/messages 2>&1\r'
+              sleep 0.5
+              printf 'echo --- self-probe ssh to localhost ---\r'
+              sleep 0.3
+              printf 'echo "" | timeout 3 nc -v 127.0.0.1 22 2>&1\r'
+              sleep 1
               printf 'cat /etc/pam.d/sshd 2>&1\r'
               sleep 0.5
               printf 'uptime\r'
