@@ -49,8 +49,15 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
-      - name: Probe nothing (no patch this run — we want command.sock=ttyS0)
-        run: echo "leaving aq unmodified so command.sock remains ttyS0 for direct getty probe"
+      - name: Patch aq to capture qemu stderr (per-MSR EINVAL)
+        run: |
+          set -x
+          # qemu-system writes per-MSR `Cannot SET msr[N] 0x<idx> with value 0x<val>`
+          # to stderr via error_report. With -daemonize, stderr post-fork is
+          # /dev/null. Redirect the launch's stderr to a file BEFORE -daemonize
+          # closes it; the partial-error fires during kvm_put_msrs in vcpu init.
+          sed -i 's|${AQ_QEMU_EXTRA_ARGS:-}|${AQ_QEMU_EXTRA_ARGS:-} 2>>/tmp/qemu-stderr.log|' /home/runner/aq/aq
+          grep -n "AQ_QEMU_EXTRA_ARGS" /home/runner/aq/aq | head
 
       - name: Cross-job warm bake run
         id: warm
@@ -110,6 +117,14 @@ jobs:
           ls -la "$VM_DIR" 2>&1 || true
           echo "=== Incoming memory file existence ==="
           ls -la "$VM_DIR/incoming-memory.bin.zst" "$VM_DIR/incoming-memory.bin" 2>&1 || true
+
+          echo "=== /tmp/qemu-stderr.log (qemu's pre-daemonize stderr) ==="
+          if [ -f /tmp/qemu-stderr.log ]; then
+            wc -c /tmp/qemu-stderr.log
+            cat /tmp/qemu-stderr.log
+          else
+            echo "(qemu-stderr.log missing — sed patch didn't take?)"
+          fi
 
           echo "=== qemu process state ==="
           ps -fp "$(cat $VM_DIR/process.pid 2>/dev/null)" 2>&1 || true
