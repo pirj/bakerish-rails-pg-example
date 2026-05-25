@@ -231,9 +231,38 @@ jobs:
             } | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/qmp.sock" 2>&1
           fi
 
-          echo "=== serial probe (send newline, capture ~3s) ==="
+          echo "=== serial: execute diagnostics inside guest ==="
+          # The guest's serial console has an open root shell (alpine:~#).
+          # Send commands and capture output. Newlines + delays to let
+          # the shell read them. \r is the line terminator for raw tty.
           if [ -S "$VM_DIR/command.sock" ]; then
-            ( printf '\n\n'; sleep 3 ) | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -100 || true
+            (
+              sleep 0.5
+              printf '\r'
+              sleep 0.3
+              printf 'echo GUEST_DIAG_BEGIN\r'
+              sleep 0.3
+              printf 'ls -la /etc/nologin /etc/banner 2>&1\r'
+              sleep 0.5
+              printf 'cat /etc/banner 2>&1\r'
+              sleep 0.5
+              printf 'cat /etc/pam.d/sshd 2>&1\r'
+              sleep 0.5
+              printf 'uptime\r'
+              sleep 0.3
+              printf 'date\r'
+              sleep 0.3
+              printf 'cat /proc/uptime\r'
+              sleep 0.3
+              printf 'rc-status default\r'
+              sleep 0.5
+              printf 'ps -eo pid,etime,comm | head -20\r'
+              sleep 0.5
+              printf 'journalctl -u sshd --no-pager -n 20 2>&1 || ( echo -- /var/log/messages tail --; tail -30 /var/log/messages 2>&1; echo -- /var/log/auth.log tail --; tail -20 /var/log/auth.log 2>&1 )\r'
+              sleep 1
+              printf 'echo GUEST_DIAG_END\r'
+              sleep 1
+            ) | timeout 15 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -200
           fi
 
           echo "=== qemu-nbd mount of storage.qcow2 (look at guest filesystem) ==="
