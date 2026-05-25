@@ -49,6 +49,24 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
+      - name: Start serial mirror (background socat)
+        run: |
+          set -x
+          VM_NAME=$(basename "$(pwd)")
+          VM_DIR="$HOME/.local/share/aq/$VM_NAME"
+          # Wait for qemu's serial socket to appear; capture stream to file.
+          # Guest kernel logs would surface here if guest kernel panicked
+          # or rebooted post-migration.
+          (
+            for _ in $(seq 1 60); do
+              [ -S "$VM_DIR/command.sock" ] && break
+              sleep 0.5
+            done
+            socat - UNIX-CONNECT:"$VM_DIR/command.sock" > /tmp/serial.log 2>&1
+          ) &
+          echo $! > /tmp/serial.pid
+          echo "Serial mirror PID: $(cat /tmp/serial.pid)"
+
       - name: Cross-job warm bake run
         id: warm
         continue-on-error: true
@@ -107,6 +125,18 @@ jobs:
           ls -la "$VM_DIR" 2>&1 || true
           echo "=== Incoming memory file existence ==="
           ls -la "$VM_DIR/incoming-memory.bin.zst" "$VM_DIR/incoming-memory.bin" 2>&1 || true
+
+          echo "=== /tmp/serial.log (guest kernel boot/panic) ==="
+          if [ -f /tmp/serial.log ]; then
+            wc -c /tmp/serial.log
+            cat /tmp/serial.log
+          else
+            echo "(serial.log missing)"
+          fi
+          # Stop background socat
+          if [ -f /tmp/serial.pid ]; then
+            kill "$(cat /tmp/serial.pid)" 2>/dev/null || true
+          fi
 
       - name: Fail if warm failed
         if: steps.warm.outcome == 'failure'
