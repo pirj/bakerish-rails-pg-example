@@ -130,6 +130,10 @@ jobs:
       - name: Dump qemu.log + qmp query-migrate
         if: always()
         run: |
+          # bash -e (errexit) by default — aborts on first non-zero exit. But
+          # socat to a dead qmp.sock returns 1, which would skip the rest of
+          # the diagnostic steps (incl. the nbd mount). Disable errexit.
+          set +e
           set -x
           VM_NAME=$(basename "$(pwd)")
           VM_DIR="$HOME/.local/share/aq/$VM_NAME"
