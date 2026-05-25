@@ -285,30 +285,64 @@ jobs:
             ) | timeout 15 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -200
           fi
 
-          echo "=== FIX TEST: disable PerSourcePenalties, restart sshd, re-probe ==="
-          # If PerSourcePenalties is the cause of 'Not allowed at this time',
-          # disabling it should let ssh work immediately.
+          echo "=== ssh-key A vs B: host side ==="
+          # What ssh key does aq have on the RESTORE host?
+          ls -la "$VM_DIR/" 2>&1 | head -20
+          echo "--- host's id_rsa.pub (if any) ---"
+          find "$VM_DIR" "$HOME/.local/share/aq" -name "*.pub" -o -name "id_rsa" -o -name "ssh-key*" 2>&1 | head -10
+          for f in "$VM_DIR/id_rsa.pub" "$VM_DIR/ssh-key.pub" "$HOME/.local/share/aq/id_rsa.pub" "$HOME/.local/share/aq/ssh-key.pub"; do
+            [ -f "$f" ] && { echo ">>> $f"; cat "$f" 2>&1; } || true
+          done
+
+          echo "=== guest authorized_keys via serial ==="
           if [ -S "$VM_DIR/command.sock" ]; then
             (
-              sleep 0.5
-              printf '\r'
-              sleep 0.3
+              sleep 0.5; printf '\r'; sleep 0.3
+              printf 'echo --- guest authorized_keys ---; cat /root/.ssh/authorized_keys 2>&1\r'
+              sleep 1
+              printf 'echo --- guest ssh host keys ---; ls -la /etc/ssh/ssh_host_*.pub 2>&1; for k in /etc/ssh/ssh_host_*.pub; do echo ">>> $k"; cat "$k" 2>&1; done\r'
+              sleep 1
+              printf 'echo DONE_KEYS\r'
+              sleep 1
+            ) | timeout 8 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -50
+          fi
+
+          echo "=== FIX TEST: disable PerSourcePenalties, restart sshd, then real ssh from host ==="
+          if [ -S "$VM_DIR/command.sock" ]; then
+            (
+              sleep 0.5; printf '\r'; sleep 0.3
               printf 'echo "PerSourcePenalties no" >> /etc/ssh/sshd_config; rc-service sshd restart 2>&1\r'
               sleep 3
-              printf 'echo POST_RESTART; tail -5 /var/log/messages\r'
+              printf 'echo POST_RESTART; rc-service sshd status; ss -tlnp 2>&1 | grep :22\r'
               sleep 1
             ) | timeout 10 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -50
           fi
-          echo "--- now probing ssh from host ---"
-          # Find the hostfwd port from qemu cmdline
-          HOSTPORT=$(ps -fp "$(cat $VM_DIR/process.pid 2>/dev/null)" 2>/dev/null | grep -oE "hostfwd=tcp::[0-9]+-:22" | grep -oE "[0-9]+" | head -1)
+
+          # Robust HOSTPORT: read it from /proc/$PID/cmdline (ps may truncate)
+          QPID=$(cat $VM_DIR/process.pid 2>/dev/null)
+          HOSTPORT=""
+          if [ -n "$QPID" ] && [ -f "/proc/$QPID/cmdline" ]; then
+            # cmdline uses NUL separators; tr to spaces, grep hostfwd
+            HOSTPORT=$(tr '\0' ' ' < /proc/$QPID/cmdline | grep -oE "hostfwd=tcp::[0-9]+-:22" | head -1 | grep -oE "[0-9]+")
+          fi
+          # Fallback: any listener on a high port that forwards to 22 (qemu bound)
+          if [ -z "$HOSTPORT" ]; then
+            HOSTPORT=$(ss -tlnp 2>/dev/null | awk '/qemu/ && $4 ~ /:[0-9]+$/ { split($4,a,":"); p=a[length(a)]; if (p > 30000) print p }' | head -1)
+          fi
+          echo "Host port resolved: ${HOSTPORT:-NONE}"
+
           if [ -n "$HOSTPORT" ]; then
-            echo "Host port: $HOSTPORT"
-            for i in 1 2 3 4 5; do
-              echo "--- probe $i ---"
+            echo "--- nc probe (clean SSH banner expected after PerSourcePenalties no) ---"
+            for i in 1 2 3; do
+              echo "  attempt $i:"
               echo "" | timeout 3 nc -v 127.0.0.1 "$HOSTPORT" 2>&1 | head -5
               sleep 1
             done
+            echo "--- full ssh attempt from host (use bake's same key path) ---"
+            # Try aq ssh — uses the key aq stored
+            timeout 8 aq ssh "$VM_NAME" -- 'echo SSH_WORKS; hostname; uptime' 2>&1 | head -20 || true
+            echo "--- bare ssh -v (no auth required, just protocol exchange) ---"
+            ssh -v -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=3 -p "$HOSTPORT" root@127.0.0.1 'echo from-ssh' 2>&1 | head -30 || true
           fi
 
           echo "=== qemu-nbd mount of storage.qcow2 (look at guest filesystem) ==="
