@@ -23,6 +23,18 @@ jobs:
       AQ_NO_SNAPSHOT_COMPRESS: '1'   # save memory.bin raw (no zstd) to eliminate exec:zstd -dc from the restore path
     steps:
       - uses: actions/checkout@v4
+      - name: Host fingerprint (save)
+        run: |
+          echo "=== /proc/cpuinfo (first core only) ==="
+          awk '/^processor/{n++} n==1' /proc/cpuinfo
+          echo "=== kernel ==="
+          uname -a
+          echo "=== KVM module ==="
+          modinfo kvm 2>&1 | head -10 || true
+          modinfo kvm_amd 2>&1 | head -10 || true
+          modinfo kvm_intel 2>&1 | head -10 || true
+          echo "=== qemu version ==="
+          dpkg -l | grep -i qemu | head -5
       - uses: pirj/setup-bakerish@v2
         with:
           cache-key-prefix: ${{ env.CACHE_KEY }}
@@ -40,7 +52,7 @@ jobs:
       # Broad patterns to catch any migration-related event qemu emits at incoming
       # load time. If file is empty, qemu's trace backend isn't compiled in (rare)
       # OR the migration code path is not invoked at all.
-      AQ_QEMU_EXTRA_ARGS: "--trace migration* --trace loadvm* --trace vmstate* --trace qemu_file*"
+      AQ_QEMU_EXTRA_ARGS: "--trace migration* --trace loadvm* --trace vmstate* --trace qemu_file* --trace kvm_failed_*"
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
@@ -49,13 +61,20 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
-      - name: Patch aq to capture qemu stderr (per-MSR EINVAL)
+      - name: Host fingerprint (restore) + patch aq to capture qemu stderr
         run: |
+          echo "=== /proc/cpuinfo (first core only) ==="
+          awk '/^processor/{n++} n==1' /proc/cpuinfo
+          echo "=== kernel ==="
+          uname -a
+          echo "=== KVM module ==="
+          modinfo kvm 2>&1 | head -10 || true
+          modinfo kvm_amd 2>&1 | head -10 || true
+          modinfo kvm_intel 2>&1 | head -10 || true
+          echo "=== qemu version ==="
+          dpkg -l | grep -i qemu | head -5
+
           set -x
-          # qemu-system writes per-MSR `Cannot SET msr[N] 0x<idx> with value 0x<val>`
-          # to stderr via error_report. With -daemonize, stderr post-fork is
-          # /dev/null. Redirect the launch's stderr to a file BEFORE -daemonize
-          # closes it; the partial-error fires during kvm_put_msrs in vcpu init.
           sed -i 's|${AQ_QEMU_EXTRA_ARGS:-}|${AQ_QEMU_EXTRA_ARGS:-} 2>>/tmp/qemu-stderr.log|' /home/runner/aq/aq
           grep -n "AQ_QEMU_EXTRA_ARGS" /home/runner/aq/aq | head
 
