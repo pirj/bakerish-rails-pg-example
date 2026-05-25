@@ -54,7 +54,12 @@ jobs:
       # OR the migration code path is not invoked at all.
       # Removed kvm_failed_* trace — it appeared to invalidate the whole trace
       # config last run (qemu.log was empty). Keep the working set only.
-      AQ_QEMU_EXTRA_ARGS: "--trace migration* --trace loadvm* --trace vmstate*"
+      # -no-reboot: qemu exits on guest reset instead of silently rebooting.
+      # If cross-VM restore triggers a guest triple-fault/panic, qemu will
+      # be GONE after migration completes — easy to detect via qmp.sock.
+      # -d cpu_reset,unimp,guest_errors: log CPU reset events, unimplemented
+      # instructions, and guest errors to /tmp/qemu.log.
+      AQ_QEMU_EXTRA_ARGS: "--trace migration* --trace loadvm* --trace vmstate* -no-reboot -d cpu_reset,unimp,guest_errors"
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
