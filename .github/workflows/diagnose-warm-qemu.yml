@@ -54,6 +54,13 @@ jobs:
           VM_NAME=$(basename "$(pwd)")
           VM_DIR="$HOME/.local/share/aq/$VM_NAME"
 
+          echo "=== rlock cache contents ==="
+          find "$HOME/.local/share/aq/cache" -type f 2>&1 | head -40 || true
+          echo "=== cache memory.bin* files ==="
+          find "$HOME/.local/share/aq/cache" -name 'memory.bin*' -exec ls -la {} \; 2>&1 || true
+          echo "=== cache meta.json kinds ==="
+          find "$HOME/.local/share/aq/cache" -name meta.json -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; 2>&1 || true
+
           echo "=== /tmp/qemu.log ==="
           if [ -f /tmp/qemu.log ]; then
             cat /tmp/qemu.log
