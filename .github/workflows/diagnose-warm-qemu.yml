@@ -111,6 +111,23 @@ jobs:
           echo "=== Incoming memory file existence ==="
           ls -la "$VM_DIR/incoming-memory.bin.zst" "$VM_DIR/incoming-memory.bin" 2>&1 || true
 
+          echo "=== qemu process state ==="
+          ps -fp "$(cat $VM_DIR/process.pid 2>/dev/null)" 2>&1 || true
+          ls -la "$VM_DIR/qmp.sock" "$VM_DIR/control.sock" "$VM_DIR/command.sock" 2>&1 || true
+
+          echo "=== dmesg (OOM killer? KVM ioctl errors?) ==="
+          sudo dmesg | tail -100 2>&1 || true
+
+          echo "=== syslog (qemu segfault? abort?) ==="
+          sudo tail -200 /var/log/syslog 2>&1 | grep -iE "qemu|segfault|abort|killed|oom|kvm" || sudo tail -200 /var/log/syslog 2>&1 | tail -50 || true
+
+          echo "=== journalctl qemu/abrt ==="
+          sudo journalctl -n 100 --no-pager 2>&1 | grep -iE "qemu|kvm|abrt|core" | tail -30 || true
+
+          echo "=== core pattern ==="
+          cat /proc/sys/kernel/core_pattern 2>&1 || true
+          ls -la /tmp/core* 2>&1 || true
+
           echo "=== qmp query-cpus-fast (are CPUs running?) ==="
           if [ -S "$VM_DIR/qmp.sock" ]; then
             {
