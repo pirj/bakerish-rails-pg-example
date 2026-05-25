@@ -82,13 +82,31 @@ jobs:
           sudo apt-get install -y bpftrace 2>&1 | tail -3
           # List kprobes that match kvm_set_msr*
           sudo bpftrace -lv 'kprobe:kvm_set_msr*' 2>&1 | head -10 || true
-          # Start bpftrace in background, capture failed MSR sets.
+          # Save MSR index at function entry, then check retval on return.
+          # kvm_set_msr signature: int kvm_set_msr(vcpu, u32 index, u64 data).
+          # arg0=vcpu, arg1=msr_index, arg2=msr_data. retval=0 ok else err.
           sudo bpftrace -e '
-            kretprobe:__kvm_set_msr / retval != 0 / {
-              printf("KVM_SET_MSR_FAIL pid=%d msr=0x%x ret=%d\n", pid, arg0, retval);
+            kprobe:kvm_set_msr {
+              @msr_idx[tid] = arg1;
+              @msr_data[tid] = arg2;
             }
-            kretprobe:kvm_set_msr_common / retval != 0 / {
-              printf("kvm_set_msr_common_FAIL pid=%d msr=0x%x ret=%d\n", pid, arg0, retval);
+            kretprobe:kvm_set_msr {
+              if (retval != 0) {
+                printf("FAIL kvm_set_msr msr=0x%lx data=0x%lx ret=%d\n",
+                       @msr_idx[tid], @msr_data[tid], (int64)retval);
+              }
+              delete(@msr_idx[tid]);
+              delete(@msr_data[tid]);
+            }
+            kprobe:kvm_set_msr_common {
+              @c_idx[tid] = arg1;
+            }
+            kretprobe:kvm_set_msr_common {
+              if (retval != 0) {
+                printf("FAIL kvm_set_msr_common msr=0x%lx ret=%d\n",
+                       @c_idx[tid], (int64)retval);
+              }
+              delete(@c_idx[tid]);
             }
           ' > /tmp/bpftrace.log 2>&1 &
           echo $! > /tmp/bpftrace.pid
