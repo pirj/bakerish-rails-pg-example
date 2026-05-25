@@ -39,6 +39,15 @@ jobs:
         with:
           cache-key-prefix: ${{ env.CACHE_KEY }}
           no-snapshot-compress: 'true'
+      - name: Patch aq -cpu host -> -cpu host,kvm=off (SAVE side)
+        run: |
+          set -x
+          # Disable KVM paravirt CPUID leaf. Guest won't see kvmclock,
+          # async_pf, pv_eoi, steal_time, poll_control. Their MSRs won't
+          # be saved in memory.bin -> cross-host restore won't try to
+          # apply stale host-bound PV state via KVM_SET_MSRS.
+          sed -i 's|-cpu host|-cpu host,kvm=off|g' /home/runner/aq/aq
+          grep -n "\\-cpu " /home/runner/aq/aq | head -5
       - run: time bake run -- bash -c 'echo SAVE_COLD_OK'
 
   restore:
@@ -52,7 +61,9 @@ jobs:
       # Broad patterns to catch any migration-related event qemu emits at incoming
       # load time. If file is empty, qemu's trace backend isn't compiled in (rare)
       # OR the migration code path is not invoked at all.
-      AQ_QEMU_EXTRA_ARGS: "--trace migration* --trace loadvm* --trace vmstate* --trace qemu_file* --trace kvm_failed_*"
+      # Removed kvm_failed_* trace — it appeared to invalidate the whole trace
+      # config last run (qemu.log was empty). Keep the working set only.
+      AQ_QEMU_EXTRA_ARGS: "--trace migration* --trace loadvm* --trace vmstate*"
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
@@ -61,7 +72,7 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
-      - name: Host fingerprint (restore) + patch aq to capture qemu stderr
+      - name: Host fingerprint + patch aq -cpu host -> -cpu host,kvm=off (RESTORE)
         run: |
           echo "=== /proc/cpuinfo (first core only) ==="
           awk '/^processor/{n++} n==1' /proc/cpuinfo
@@ -71,12 +82,11 @@ jobs:
           modinfo kvm 2>&1 | head -10 || true
           modinfo kvm_amd 2>&1 | head -10 || true
           modinfo kvm_intel 2>&1 | head -10 || true
-          echo "=== qemu version ==="
-          dpkg -l | grep -i qemu | head -5
 
           set -x
+          sed -i 's|-cpu host|-cpu host,kvm=off|g' /home/runner/aq/aq
           sed -i 's|${AQ_QEMU_EXTRA_ARGS:-}|${AQ_QEMU_EXTRA_ARGS:-} 2>>/tmp/qemu-stderr.log|' /home/runner/aq/aq
-          grep -n "AQ_QEMU_EXTRA_ARGS" /home/runner/aq/aq | head
+          grep -nE "\\-cpu |AQ_QEMU_EXTRA_ARGS" /home/runner/aq/aq | head
 
       - name: Cross-job warm bake run
         id: warm
