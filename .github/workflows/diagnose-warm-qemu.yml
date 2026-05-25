@@ -232,6 +232,44 @@ jobs:
             ( printf '\n\n'; sleep 3 ) | timeout 5 socat - UNIX-CONNECT:"$VM_DIR/command.sock" 2>&1 | head -100 || true
           fi
 
+          echo "=== qemu-nbd mount of storage.qcow2 (look at guest filesystem) ==="
+          # Need qemu to release the disk first
+          if [ -f "$VM_DIR/process.pid" ]; then
+            sudo kill "$(cat $VM_DIR/process.pid)" 2>&1 || true
+            sleep 2
+          fi
+          sudo modprobe nbd max_part=8 2>&1 || true
+          sudo qemu-nbd --read-only --connect=/dev/nbd0 "$VM_DIR/storage.qcow2" 2>&1 || true
+          sleep 1
+          sudo lsblk /dev/nbd0 2>&1 || true
+          # Try common partitions — Alpine usually has /dev/vda3 (root) which becomes nbd0p3
+          for p in /dev/nbd0p3 /dev/nbd0p1 /dev/nbd0p2; do
+            if sudo file -s "$p" 2>&1 | grep -q ext; then
+              echo "--- mounting $p ---"
+              sudo mkdir -p /mnt/guest
+              sudo mount -o ro "$p" /mnt/guest 2>&1 || continue
+              echo "=== /etc/nologin: ==="
+              sudo ls -la /mnt/guest/etc/nologin 2>&1 || echo "(absent)"
+              sudo head -10 /mnt/guest/etc/nologin 2>&1 || true
+              echo "=== /etc/pam.d/sshd: ==="
+              sudo cat /mnt/guest/etc/pam.d/sshd 2>&1 || true
+              echo "=== /etc/banner / /etc/issue / /etc/issue.net / /etc/motd: ==="
+              for f in banner issue issue.net motd; do
+                echo "--- /etc/$f ---"
+                sudo cat /mnt/guest/etc/$f 2>&1 || echo "(absent)"
+              done
+              echo "=== /etc/security/time.conf (pam_time rules): ==="
+              sudo cat /mnt/guest/etc/security/time.conf 2>&1 | grep -v "^#" | head -20 || echo "(absent or all comments)"
+              echo "=== /etc/init.d/nologin script: ==="
+              sudo head -30 /mnt/guest/etc/init.d/nologin 2>&1 || echo "(absent)"
+              echo "=== /var/log/messages tail: ==="
+              sudo tail -50 /mnt/guest/var/log/messages 2>&1 || echo "(absent)"
+              sudo umount /mnt/guest
+              break
+            fi
+          done
+          sudo qemu-nbd --disconnect /dev/nbd0 2>&1 || true
+
       - name: Fail if warm failed
         if: steps.warm.outcome == 'failure'
         run: exit 1
