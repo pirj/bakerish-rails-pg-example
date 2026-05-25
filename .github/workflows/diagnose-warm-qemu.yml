@@ -49,23 +49,15 @@ jobs:
           cache-restore-only: 'true'
           no-snapshot-compress: 'true'
 
-      - name: Start serial mirror (background socat)
+      - name: Patch aq to add serial-to-file before unix socket
         run: |
           set -x
-          VM_NAME=$(basename "$(pwd)")
-          VM_DIR="$HOME/.local/share/aq/$VM_NAME"
-          # Wait for qemu's serial socket to appear; capture stream to file.
-          # Guest kernel logs would surface here if guest kernel panicked
-          # or rebooted post-migration.
-          (
-            for _ in $(seq 1 60); do
-              [ -S "$VM_DIR/command.sock" ] && break
-              sleep 0.5
-            done
-            socat - UNIX-CONNECT:"$VM_DIR/command.sock" > /tmp/serial.log 2>&1
-          ) &
-          echo $! > /tmp/serial.pid
-          echo "Serial mirror PID: $(cat /tmp/serial.pid)"
+          # Insert a `-serial file:/tmp/qemu-serial.log` BEFORE the existing
+          # `-serial unix:` so ttyS0 (the kernel console) writes to the file.
+          # The unix socket becomes ttyS1 (kept for aq compatibility, unused
+          # by bake-run anyway). Captures full guest boot from t=0.
+          sed -i 's|-serial unix:|-serial file:/tmp/qemu-serial.log -serial unix:|' /home/runner/aq/aq
+          grep -- "-serial " /home/runner/aq/aq | head -5
 
       - name: Cross-job warm bake run
         id: warm
@@ -126,16 +118,12 @@ jobs:
           echo "=== Incoming memory file existence ==="
           ls -la "$VM_DIR/incoming-memory.bin.zst" "$VM_DIR/incoming-memory.bin" 2>&1 || true
 
-          echo "=== /tmp/serial.log (guest kernel boot/panic) ==="
-          if [ -f /tmp/serial.log ]; then
-            wc -c /tmp/serial.log
-            cat /tmp/serial.log
+          echo "=== /tmp/qemu-serial.log (guest kernel from t=0) ==="
+          if [ -f /tmp/qemu-serial.log ]; then
+            wc -c /tmp/qemu-serial.log
+            cat /tmp/qemu-serial.log
           else
-            echo "(serial.log missing)"
-          fi
-          # Stop background socat
-          if [ -f /tmp/serial.pid ]; then
-            kill "$(cat /tmp/serial.pid)" 2>/dev/null || true
+            echo "(qemu-serial.log missing — patch didn't take effect?)"
           fi
 
       - name: Fail if warm failed
