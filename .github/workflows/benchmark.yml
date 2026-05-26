@@ -1,0 +1,81 @@
+# Round 7 benchmark — cross-VM warm restore with v2.5.25 (key inject fix).
+#
+# Cold job populates cache (single sample). Warm matrix: 5 PARALLEL jobs
+# each on a different runner = different Azure VM. Each measures bake-run
+# wall-clock at ms resolution via $EPOCHREALTIME (bash 5+).
+#
+# Compare against round 6 A (zstd default) and round 6 B (no-zstd opt-out)
+# in meta/benchmark-2026-05-21-round6.md. Round 7 is the first cross-VM
+# warm measurement that actually validates — earlier rounds were same-job
+# (same Azure VM) which masked the cross-VM auth issue.
+
+name: benchmark-round7
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Cache key suffix (forces fresh cache when bumped)'
+        required: false
+        default: 'r7'
+
+jobs:
+  cold:
+    name: cold (populate cache)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      cold_ms: ${{ steps.measure.outputs.cold_ms }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          aq-version: 'v2.5.25'
+          cache-key-prefix: 'bench-${{ inputs.tag }}'
+      - id: measure
+        name: cold bake run (ms timing)
+        run: |
+          set -e
+          t0=$EPOCHREALTIME
+          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-ready && cat /home/rlock/repo/.pg-ready'
+          t1=$EPOCHREALTIME
+          ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
+          echo "cold_ms=$ms" >> "$GITHUB_OUTPUT"
+          echo "COLD_BAKE_MS=$ms"
+          du -sh ~/.local/share/aq/cache 2>/dev/null || true
+          find ~/.local/share/aq/cache -name 'memory.bin*' -exec ls -la {} \; 2>/dev/null || true
+
+  warm:
+    name: warm sample ${{ matrix.sample }}
+    needs: cold
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          aq-version: 'v2.5.25'
+          cache-key-prefix: 'bench-${{ inputs.tag }}'
+          cache-restore-only: 'true'
+      - name: warm bake run (ms timing, sample ${{ matrix.sample }})
+        run: |
+          set -e
+          t0=$EPOCHREALTIME
+          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-ready'
+          t1=$EPOCHREALTIME
+          ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
+          echo "WARM_${{ matrix.sample }}_MS=$ms"
+
+  report:
+    needs: [cold, warm]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Cold: ${{ needs.cold.outputs.cold_ms }} ms"
+          echo "Warm samples: see individual job logs (search WARM_N_MS)."
+          echo "Stack: aq v2.5.25 (cross-host warm fix), default zstd compression."
