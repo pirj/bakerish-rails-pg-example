@@ -24,7 +24,7 @@ jobs:
 
       - uses: pirj/setup-bakerish@v2
         with:
-          aq-version: 'v2.5.26'                  # cross-host warm fix
+          aq-version: 'v2.5.27'                  # cross-host warm fix
           cache-key-prefix: 'bakeri-v2.5.23'     # invalidate prior cache after aq fix
 
       - name: bake run — verify the warm DB
