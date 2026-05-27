@@ -28,10 +28,10 @@ jobs:
       cold_ms: ${{ steps.measure.outputs.cold_ms }}
     steps:
       - uses: actions/checkout@v4
-      - uses: pirj/setup-bakerish@v2
+      - uses: pirj/setup-snapcompose@v2
         with:
-          aq-version: 'v2.5.31'
-          rlock-version: 'v0.1.4'
+          aq-version: v2.5.37
+          rlock-version: v0.1.9
           cache-key-prefix: 'bench-${{ inputs.tag }}'
       - id: measure
         name: cold bake run (ms timing)
@@ -59,10 +59,10 @@ jobs:
         sample: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
-      - uses: pirj/setup-bakerish@v2
+      - uses: pirj/setup-snapcompose@v2
         with:
-          aq-version: 'v2.5.31'
-          rlock-version: 'v0.1.4'
+          aq-version: v2.5.37
+          rlock-version: v0.1.9
           cache-key-prefix: 'bench-${{ inputs.tag }}'
           cache-restore-only: 'true'
       - name: warm bake run (ms timing, sample ${{ matrix.sample }})

@@ -1,9 +1,9 @@
-# bakerish-rails-pg-example
+# snapcompose-rails-pg-example
 
-End-to-end validation fixture for [bakeri.sh](https://github.com/pirj/bakeri.sh)
-+ [pirj/setup-bakerish@v2](https://github.com/pirj/setup-bakerish).
+End-to-end validation fixture for [snapcompose](https://github.com/pirj/snapcompose)
++ [pirj/setup-snapcompose@v2](https://github.com/pirj/setup-snapcompose).
 
-The point: drive `pirj/setup-bakerish@v2` from a real GH Actions
+The point: drive `pirj/setup-snapcompose@v2` from a real GH Actions
 workflow against a real public project, measure the cold-and-warm
 wall-clocks, validate the full stack works outside the maintainer's
 M3.
@@ -14,10 +14,10 @@ M3.
   for "your Rails app's container".
 - `docker-compose.yml` — postgres:16-alpine + the app, with
   postgres healthcheck and `depends_on: db: service_healthy`.
-- `bakerish.toml` — declares `[memory] size = "4G"` for the
+- `snapcompose.toml` — declares `[memory] size = "4G"` for the
   docker-compose live snapshot + a trivial `[prebuild.pg-ready]`
   layer that pings the warm DB.
-- `.github/workflows/ci.yml` — uses `pirj/setup-bakerish@v2`, runs
+- `.github/workflows/ci.yml` — uses `pirj/setup-snapcompose@v2`, runs
   `bake run` against the fixture, times the whole thing.
 
 ## Expected timings (from the round-6 M3 bench for reference)
@@ -37,4 +37,4 @@ workflow runs a few times.
 
 ## License
 
-MIT — same as the upstream bakeri.sh stack.
+MIT — same as the upstream snapcompose stack.

@@ -1,5 +1,5 @@
 # Validation + benchmark fixture: tiny Rails+Postgres-shaped project that
-# exercises bakeri.sh CI integration end-to-end on GH Actions.
+# exercises snapcompose CI integration end-to-end on GH Actions.
 #
 # As of 2026-05-27 this fixture also benchmarks the
 # AQ_MEMORY_SNAPSHOT=zstd-patch path — three live layers in a row
@@ -7,7 +7,7 @@
 # of pg-prewarm and schema-loaded against compose can be measured. See
 # meta/benchmark-progression.md rounds 17 (default zstd) and 18 (patch).
 #
-# Note on single-line `cmd`: bakeri.sh's TOML reader (rlock's
+# Note on single-line `cmd`: snapcompose's TOML reader (rlock's
 # lib/toml.sh) supports only single-line `key = "value"` form. TOML's
 # triple-quoted multi-line strings aren't supported. Multi-step shells
 # are chained with && (fail-fast) on one line.
