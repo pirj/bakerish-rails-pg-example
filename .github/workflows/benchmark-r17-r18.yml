@@ -3,14 +3,10 @@
 # benchmark-progression.md's M3 measurements, but on ubuntu-latest
 # (Azure KVM nested in Hyper-V).
 #
-# Two matrix branches:
-#   R17: AQ_MEMORY_SNAPSHOT=zstd (default — pzstd multi-frame)
-#   R18: AQ_MEMORY_SNAPSHOT=zstd-patch (B5 chain reconstruction)
-#
-# Each branch: 1 cold (populate cache) + 5 warm samples in parallel
-# (different Azure VM each). Warm is cross-VM, which is the realistic
-# CI usage pattern. Cache key per branch so the two don't cross-
-# contaminate.
+# Two independent pipelines so a cold failure in one mode doesn't block
+# the other's warm matrix:
+#   R17 path: cold-zstd → warm-zstd (matrix 1..5)
+#   R18 path: cold-zstd-patch → warm-zstd-patch (matrix 1..5)
 
 name: benchmark-r17-r18
 
@@ -20,85 +16,113 @@ on:
       tag:
         description: 'Cache key suffix (bump to force fresh cache)'
         required: false
-        default: 'r17r18-v1'
+        default: 'r17r18-v2'
+
+env:
+  AQ_VERSION: 'v2.5.36'
+  RLOCK_VERSION: 'v0.1.9'
 
 jobs:
-  cold:
-    name: cold ${{ matrix.mode }}
+  cold-zstd:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        mode: [zstd, zstd-patch]
-    outputs:
-      cold_zstd_ms: ${{ steps.measure.outputs.cold_zstd_ms }}
-      cold_zstd_patch_ms: ${{ steps.measure.outputs.cold_zstd_patch_ms }}
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
         with:
-          aq-version: 'v2.5.36'
-          rlock-version: 'v0.1.9'
-          cache-key-prefix: 'bench-${{ inputs.tag }}-${{ matrix.mode }}'
-      - id: measure
-        name: cold bake run (${{ matrix.mode }})
+          aq-version: ${{ env.AQ_VERSION }}
+          rlock-version: ${{ env.RLOCK_VERSION }}
+          cache-key-prefix: 'bench-${{ inputs.tag }}-zstd'
+      - name: cold bake run (zstd)
         env:
           AQ_TIMING: '1'
-          AQ_MEMORY_SNAPSHOT: ${{ matrix.mode }}
+          AQ_MEMORY_SNAPSHOT: 'zstd'
         run: |
           set -e
           t0=$EPOCHREALTIME
           time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
           ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
-          key="cold_${{ matrix.mode }}_ms"
-          # gh's mode output needs underscore-safe key
-          safe_key=$(echo "$key" | tr '-' '_')
-          echo "${safe_key}=$ms" >> "$GITHUB_OUTPUT"
-          echo "COLD_${{ matrix.mode }}_MS=$ms"
-          echo "==== Cache layout (${{ matrix.mode }}) ===="
+          echo "COLD_ZSTD_MS=$ms"
           du -sh ~/.local/share/aq/cache 2>/dev/null || true
-          for d in ~/.local/share/aq/cache/*/*/; do
-            [ -d "$d" ] || continue
-            plugin=$(basename "$(dirname "$d")")
-            key_short=$(basename "$d" | cut -c1-12)
-            total=$(du -sh "$d" | awk '{print $1}')
-            for f in memory.bin memory.bin.zst memory.bin.zstpatch; do
-              if [ -f "$d/$f" ]; then
-                fsize=$(ls -la "$d/$f" | awk '{print $5}')
-                fkb=$((fsize/1024))
-                echo "  $plugin/$key_short: $f size=$fsize ($fkb KiB)  total=$total"
-              fi
-            done
-          done
+          find ~/.local/share/aq/cache -type f \( -name 'memory.bin*' -o -name 'disk.qcow2' \) -exec ls -la {} \; 2>/dev/null || true
 
-  warm:
-    name: warm ${{ matrix.mode }} sample ${{ matrix.sample }}
-    needs: cold
+  cold-zstd-patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          aq-version: ${{ env.AQ_VERSION }}
+          rlock-version: ${{ env.RLOCK_VERSION }}
+          cache-key-prefix: 'bench-${{ inputs.tag }}-zstd-patch'
+      - name: cold bake run (zstd-patch)
+        env:
+          AQ_TIMING: '1'
+          AQ_MEMORY_SNAPSHOT: 'zstd-patch'
+        run: |
+          set -e
+          t0=$EPOCHREALTIME
+          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          t1=$EPOCHREALTIME
+          ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
+          echo "COLD_ZSTD_PATCH_MS=$ms"
+          du -sh ~/.local/share/aq/cache 2>/dev/null || true
+          find ~/.local/share/aq/cache -type f \( -name 'memory.bin*' -o -name 'disk.qcow2' \) -exec ls -la {} \; 2>/dev/null || true
+
+  warm-zstd:
+    needs: cold-zstd
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        mode: [zstd, zstd-patch]
         sample: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
       - uses: pirj/setup-bakerish@v2
         with:
-          aq-version: 'v2.5.36'
-          rlock-version: 'v0.1.9'
-          cache-key-prefix: 'bench-${{ inputs.tag }}-${{ matrix.mode }}'
+          aq-version: ${{ env.AQ_VERSION }}
+          rlock-version: ${{ env.RLOCK_VERSION }}
+          cache-key-prefix: 'bench-${{ inputs.tag }}-zstd'
           cache-restore-only: 'true'
-      - name: warm bake run (${{ matrix.mode }} sample ${{ matrix.sample }})
+      - name: warm bake run (zstd, sample ${{ matrix.sample }})
         env:
           AQ_TIMING: '1'
-          AQ_MEMORY_SNAPSHOT: ${{ matrix.mode }}
+          AQ_MEMORY_SNAPSHOT: 'zstd'
         run: |
           set -e
           t0=$EPOCHREALTIME
           time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
           ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
-          echo "WARM_${{ matrix.mode }}_${{ matrix.sample }}_MS=$ms"
+          echo "WARM_ZSTD_${{ matrix.sample }}_MS=$ms"
+
+  warm-zstd-patch:
+    needs: cold-zstd-patch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          aq-version: ${{ env.AQ_VERSION }}
+          rlock-version: ${{ env.RLOCK_VERSION }}
+          cache-key-prefix: 'bench-${{ inputs.tag }}-zstd-patch'
+          cache-restore-only: 'true'
+      - name: warm bake run (zstd-patch, sample ${{ matrix.sample }})
+        env:
+          AQ_TIMING: '1'
+          AQ_MEMORY_SNAPSHOT: 'zstd-patch'
+        run: |
+          set -e
+          t0=$EPOCHREALTIME
+          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          t1=$EPOCHREALTIME
+          ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
+          echo "WARM_ZSTD_PATCH_${{ matrix.sample }}_MS=$ms"
