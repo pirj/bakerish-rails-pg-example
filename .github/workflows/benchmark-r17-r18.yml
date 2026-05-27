@@ -1,0 +1,104 @@
+# Benchmark rounds 17 + 18 — cross-VM warm restore with the 3-live-layer
+# fixture (compose + pg-prewarm + schema-loaded). Mirrors meta/
+# benchmark-progression.md's M3 measurements, but on ubuntu-latest
+# (Azure KVM nested in Hyper-V).
+#
+# Two matrix branches:
+#   R17: AQ_MEMORY_SNAPSHOT=zstd (default — pzstd multi-frame)
+#   R18: AQ_MEMORY_SNAPSHOT=zstd-patch (B5 chain reconstruction)
+#
+# Each branch: 1 cold (populate cache) + 5 warm samples in parallel
+# (different Azure VM each). Warm is cross-VM, which is the realistic
+# CI usage pattern. Cache key per branch so the two don't cross-
+# contaminate.
+
+name: benchmark-r17-r18
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Cache key suffix (bump to force fresh cache)'
+        required: false
+        default: 'r17r18-v1'
+
+jobs:
+  cold:
+    name: cold ${{ matrix.mode }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [zstd, zstd-patch]
+    outputs:
+      cold_zstd_ms: ${{ steps.measure.outputs.cold_zstd_ms }}
+      cold_zstd_patch_ms: ${{ steps.measure.outputs.cold_zstd_patch_ms }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          aq-version: 'v2.5.36'
+          rlock-version: 'v0.1.9'
+          cache-key-prefix: 'bench-${{ inputs.tag }}-${{ matrix.mode }}'
+      - id: measure
+        name: cold bake run (${{ matrix.mode }})
+        env:
+          AQ_TIMING: '1'
+          AQ_MEMORY_SNAPSHOT: ${{ matrix.mode }}
+        run: |
+          set -e
+          t0=$EPOCHREALTIME
+          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          t1=$EPOCHREALTIME
+          ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
+          key="cold_${{ matrix.mode }}_ms"
+          # gh's mode output needs underscore-safe key
+          safe_key=$(echo "$key" | tr '-' '_')
+          echo "${safe_key}=$ms" >> "$GITHUB_OUTPUT"
+          echo "COLD_${{ matrix.mode }}_MS=$ms"
+          echo "==== Cache layout (${{ matrix.mode }}) ===="
+          du -sh ~/.local/share/aq/cache 2>/dev/null || true
+          for d in ~/.local/share/aq/cache/*/*/; do
+            [ -d "$d" ] || continue
+            plugin=$(basename "$(dirname "$d")")
+            key_short=$(basename "$d" | cut -c1-12)
+            total=$(du -sh "$d" | awk '{print $1}')
+            for f in memory.bin memory.bin.zst memory.bin.zstpatch; do
+              if [ -f "$d/$f" ]; then
+                fsize=$(ls -la "$d/$f" | awk '{print $5}')
+                fkb=$((fsize/1024))
+                echo "  $plugin/$key_short: $f size=$fsize ($fkb KiB)  total=$total"
+              fi
+            done
+          done
+
+  warm:
+    name: warm ${{ matrix.mode }} sample ${{ matrix.sample }}
+    needs: cold
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [zstd, zstd-patch]
+        sample: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pirj/setup-bakerish@v2
+        with:
+          aq-version: 'v2.5.36'
+          rlock-version: 'v0.1.9'
+          cache-key-prefix: 'bench-${{ inputs.tag }}-${{ matrix.mode }}'
+          cache-restore-only: 'true'
+      - name: warm bake run (${{ matrix.mode }} sample ${{ matrix.sample }})
+        env:
+          AQ_TIMING: '1'
+          AQ_MEMORY_SNAPSHOT: ${{ matrix.mode }}
+        run: |
+          set -e
+          t0=$EPOCHREALTIME
+          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          t1=$EPOCHREALTIME
+          ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
+          echo "WARM_${{ matrix.mode }}_${{ matrix.sample }}_MS=$ms"
