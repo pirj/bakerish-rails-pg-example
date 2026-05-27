@@ -19,8 +19,8 @@ on:
         default: 'r17r18-v2'
 
 env:
-  AQ_VERSION: 'v2.5.37'
-  RLOCK_VERSION: 'v0.1.9'
+  AQ_VERSION: 'v2.5.38'
+  RLOCK_VERSION: 'v0.1.10'
 
 jobs:
   cold-zstd:
