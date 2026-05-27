@@ -28,19 +28,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: pirj/setup-snapcompose@v2
+      - uses: pirj/setup-snapcompose@v3
         with:
           aq-version: ${{ env.AQ_VERSION }}
           rlock-version: ${{ env.RLOCK_VERSION }}
           cache-key-prefix: 'bench-${{ inputs.tag }}-zstd'
-      - name: cold bake run (zstd)
+      - name: cold snapc run (zstd)
         env:
           AQ_TIMING: '1'
           AQ_MEMORY_SNAPSHOT: 'zstd'
         run: |
           set -e
           t0=$EPOCHREALTIME
-          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
           ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
           echo "COLD_ZSTD_MS=$ms"
@@ -52,19 +52,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: pirj/setup-snapcompose@v2
+      - uses: pirj/setup-snapcompose@v3
         with:
           aq-version: ${{ env.AQ_VERSION }}
           rlock-version: ${{ env.RLOCK_VERSION }}
           cache-key-prefix: 'bench-${{ inputs.tag }}-zstd-patch'
-      - name: cold bake run (zstd-patch)
+      - name: cold snapc run (zstd-patch)
         env:
           AQ_TIMING: '1'
           AQ_MEMORY_SNAPSHOT: 'zstd-patch'
         run: |
           set -e
           t0=$EPOCHREALTIME
-          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
           ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
           echo "COLD_ZSTD_PATCH_MS=$ms"
@@ -81,20 +81,20 @@ jobs:
         sample: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
-      - uses: pirj/setup-snapcompose@v2
+      - uses: pirj/setup-snapcompose@v3
         with:
           aq-version: ${{ env.AQ_VERSION }}
           rlock-version: ${{ env.RLOCK_VERSION }}
           cache-key-prefix: 'bench-${{ inputs.tag }}-zstd'
           cache-restore-only: 'true'
-      - name: warm bake run (zstd, sample ${{ matrix.sample }})
+      - name: warm snapc run (zstd, sample ${{ matrix.sample }})
         env:
           AQ_TIMING: '1'
           AQ_MEMORY_SNAPSHOT: 'zstd'
         run: |
           set -e
           t0=$EPOCHREALTIME
-          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
           ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
           echo "WARM_ZSTD_${{ matrix.sample }}_MS=$ms"
@@ -109,20 +109,20 @@ jobs:
         sample: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v4
-      - uses: pirj/setup-snapcompose@v2
+      - uses: pirj/setup-snapcompose@v3
         with:
           aq-version: ${{ env.AQ_VERSION }}
           rlock-version: ${{ env.RLOCK_VERSION }}
           cache-key-prefix: 'bench-${{ inputs.tag }}-zstd-patch'
           cache-restore-only: 'true'
-      - name: warm bake run (zstd-patch, sample ${{ matrix.sample }})
+      - name: warm snapc run (zstd-patch, sample ${{ matrix.sample }})
         env:
           AQ_TIMING: '1'
           AQ_MEMORY_SNAPSHOT: 'zstd-patch'
         run: |
           set -e
           t0=$EPOCHREALTIME
-          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
+          time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
           ms=$(awk "BEGIN { printf \"%.0f\", ($t1 - $t0) * 1000 }")
           echo "WARM_ZSTD_PATCH_${{ matrix.sample }}_MS=$ms"

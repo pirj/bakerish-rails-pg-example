@@ -1,4 +1,4 @@
-# Validation workflow for pirj/setup-snapcompose@v2 + pirj/snapcompose end-
+# Validation workflow for pirj/setup-snapcompose@v3 + pirj/snapcompose end-
 # to-end. Runs on ubuntu-latest: the path adopters will actually use.
 # First run on a given cache key = cold (aq's base-build runs); subsequent
 # runs on the same key = warm (snapshot layer cache restored).
@@ -22,12 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pirj/setup-snapcompose@v2
+      - uses: pirj/setup-snapcompose@v3
         with:
           aq-version: 'v2.5.37'                  # cross-host warm fix
           cache-key-prefix: 'snapcompose-v3'     # invalidate prior cache after aq fix
 
-      - name: bake run — verify the warm DB
+      - name: snapc run — verify the warm DB
         run: |
           set -e
-          time bake run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-ready && cat /home/rlock/repo/.pg-ready'
+          time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-ready && cat /home/rlock/repo/.pg-ready'
