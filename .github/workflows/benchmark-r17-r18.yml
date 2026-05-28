@@ -58,8 +58,6 @@ jobs:
           rlock-version: ${{ env.RLOCK_VERSION }}
           cache-key-prefix: 'bench-${{ inputs.tag }}-zstd-patch'
       - name: cold snapc run (zstd-patch)
-        id: cold-patch-run
-        continue-on-error: true
         env:
           AQ_TIMING: '1'
           AQ_MEMORY_SNAPSHOT: 'zstd-patch'
@@ -72,47 +70,6 @@ jobs:
           echo "COLD_ZSTD_PATCH_MS=$ms"
           du -sh ~/.local/share/aq/cache 2>/dev/null || true
           find ~/.local/share/aq/cache -type f \( -name 'memory.bin*' -o -name 'disk.qcow2' \) -exec ls -la {} \; 2>/dev/null || true
-
-      - name: post-failure valgrind on the failing zstd decode
-        if: steps.cold-patch-run.outcome == 'failure'
-        run: |
-          set -e
-          sudo apt-get install -y --no-install-recommends valgrind
-          REF_ZST=$(find ~/.local/share/aq/cache -name 'memory.bin.zst' -path '*docker-compose*' | head -1)
-          # Find ALL .zstpatch files and run valgrind against each — the
-          # cache has multiple (git auto-layer + _prebuild-pg-prewarm +
-          # _prebuild-schema-loaded), but only some trigger the bug.
-          if [ -z "$REF_ZST" ]; then
-            echo "no docker-compose memory.bin.zst found in cache — bug exited before save"
-            exit 0
-          fi
-          echo "REF_ZST=$REF_ZST"
-          zstd -dc "$REF_ZST" > /tmp/ref.bin
-          ls -la /tmp/ref.bin
-          echo "ref sha256: $(sha256sum /tmp/ref.bin)"
-          for PATCH in $(find ~/.local/share/aq/cache -name 'memory.bin.zstpatch'); do
-            echo
-            echo "================================================================="
-            echo "PATCH=$PATCH"
-            echo "patch size: $(stat -c %s "$PATCH") bytes"
-            echo "=== plain zstd decode (no valgrind) — does it fail? ==="
-            if zstd -d --long=31 --patch-from=/tmp/ref.bin "$PATCH" -o /tmp/out.bin --force 2>&1; then
-              echo "  plain decode: PASS"
-            else
-              echo "  plain decode: FAIL — this is the buggy patch"
-              echo
-              echo "=== valgrind memcheck on the failing patch ==="
-              # --error-exitcode=0 keeps going after error
-              # --track-origins reports where uninit value came from
-              valgrind --tool=memcheck --error-exitcode=0 --track-origins=yes --num-callers=20 \
-                zstd -d --long=31 --patch-from=/tmp/ref.bin "$PATCH" -o /tmp/out.bin --force 2>&1 \
-                | head -200
-            fi
-          done
-
-      - name: fail the job if the cold run failed
-        if: steps.cold-patch-run.outcome == 'failure'
-        run: exit 1
 
   warm-zstd:
     needs: cold-zstd
