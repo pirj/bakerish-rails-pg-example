@@ -20,7 +20,7 @@ on:
 
 env:
   AQ_VERSION: 'v2.5.40'
-  RLOCK_VERSION: 'v0.1.11'
+  RLOCK_VERSION: 'v0.1.12'
 
 jobs:
   cold-zstd:
