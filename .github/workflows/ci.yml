@@ -24,10 +24,14 @@ jobs:
 
       - uses: pirj/setup-snapcompose@v3
         with:
-          aq-version: 'v2.5.37'                  # cross-host warm fix
-          cache-key-prefix: 'snapcompose-v3'     # invalidate prior cache after aq fix
+          aq-version: 'v2.5.38'                  # patch-from + serial-inject 10s timeout
+          rlock-version: 'v0.1.11'               # chain-reconstruction leaf-direct fix
+          cache-key-prefix: 'snapcompose-v4'     # invalidate prior cache after multi-layer fixture
 
       - name: snapc run — verify the warm DB
         run: |
           set -e
-          time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-ready && cat /home/rlock/repo/.pg-ready'
+          # Final live layer of the multi-layer fixture is `schema-loaded`;
+          # check both layer markers exist and the schema layer actually
+          # inserted the seed rows.
+          time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded && docker compose exec -T db psql -U postgres -tAc "SELECT count(*) FROM bench_items;"'
