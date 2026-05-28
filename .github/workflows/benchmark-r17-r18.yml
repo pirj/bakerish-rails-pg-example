@@ -19,7 +19,7 @@ on:
         default: 'r17r18-v2'
 
 env:
-  AQ_VERSION: 'v2.5.42'
+  AQ_VERSION: 'v2.5.44'
   RLOCK_VERSION: 'v0.1.12'
 
 jobs:
