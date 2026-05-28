@@ -24,7 +24,7 @@ jobs:
 
       - uses: pirj/setup-snapcompose@v3
         with:
-          aq-version: 'v2.5.41'                  # patch-from + serial-inject 10s timeout
+          aq-version: 'v2.5.42'                  # patch-from + serial-inject 10s timeout
           rlock-version: 'v0.1.12'               # chain-reconstruction leaf-direct fix
           cache-key-prefix: 'snapcompose-v4'     # invalidate prior cache after multi-layer fixture
 
