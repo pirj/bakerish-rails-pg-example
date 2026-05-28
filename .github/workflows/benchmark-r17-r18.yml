@@ -20,7 +20,7 @@ on:
 
 env:
   AQ_VERSION: 'v2.5.38'
-  RLOCK_VERSION: 'v0.1.10'
+  RLOCK_VERSION: 'v0.1.11'
 
 jobs:
   cold-zstd:
@@ -57,7 +57,6 @@ jobs:
           aq-version: ${{ env.AQ_VERSION }}
           rlock-version: ${{ env.RLOCK_VERSION }}
           cache-key-prefix: 'bench-${{ inputs.tag }}-zstd-patch'
-          disable-zstd-asm: 'true'
       - name: cold snapc run (zstd-patch)
         id: cold-patch-run
         continue-on-error: true
@@ -158,7 +157,6 @@ jobs:
           aq-version: ${{ env.AQ_VERSION }}
           rlock-version: ${{ env.RLOCK_VERSION }}
           cache-key-prefix: 'bench-${{ inputs.tag }}-zstd-patch'
-          disable-zstd-asm: 'true'
           cache-restore-only: 'true'
       - name: warm snapc run (zstd-patch, sample ${{ matrix.sample }})
         env:
