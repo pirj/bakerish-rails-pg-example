@@ -91,8 +91,30 @@ jobs:
         env:
           AQ_TIMING: '1'
           AQ_MEMORY_SNAPSHOT: 'zstd'
+          # R24 diagnostic — capture qemu's stderr (otherwise lost via
+          # -daemonize → /dev/null) and emit guest_errors / unimp /
+          # cpu_reset events. KVM_INTERNAL_ERROR writes to stderr via
+          # plain fprintf, so -D file: is enough to capture it, but
+          # the -d flags add context (CPU register dumps, unhandled
+          # instructions, reset cause).
+          AQ_QEMU_LOG_FILE: /tmp/qemu-warm.log
+          AQ_QEMU_EXTRA_ARGS: '-d guest_errors,unimp,cpu_reset'
+          # Also dump dmesg (KVM kernel module's view of the failure)
+          # and CPU info on failure to attribute the runner hardware.
         run: |
           set -e
+          # Always dump diagnostics on EXIT (success or failure) so
+          # we have both passing- and failing-run baselines.
+          trap '
+            echo "=== qemu-warm.log (last 200 lines) ===";
+            tail -200 /tmp/qemu-warm.log 2>/dev/null || echo "(no log)";
+            echo "=== dmesg tail (KVM/qemu lines) ===";
+            sudo dmesg 2>/dev/null | grep -iE "kvm|qemu" | tail -50 || true;
+            echo "=== /proc/cpuinfo (model + tsc) ===";
+            grep -E "^model name|^cpu MHz|^flags" /proc/cpuinfo | head -6;
+            echo "=== /sys/devices/system/clocksource/clocksource0/current_clocksource ===";
+            cat /sys/devices/system/clocksource/clocksource0/current_clocksource 2>/dev/null || true;
+          ' EXIT
           t0=$EPOCHREALTIME
           time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
@@ -119,8 +141,20 @@ jobs:
         env:
           AQ_TIMING: '1'
           AQ_MEMORY_SNAPSHOT: 'zstd-patch'
+          AQ_QEMU_LOG_FILE: /tmp/qemu-warm.log
+          AQ_QEMU_EXTRA_ARGS: '-d guest_errors,unimp,cpu_reset'
         run: |
           set -e
+          trap '
+            echo "=== qemu-warm.log (last 200 lines) ===";
+            tail -200 /tmp/qemu-warm.log 2>/dev/null || echo "(no log)";
+            echo "=== dmesg tail (KVM/qemu lines) ===";
+            sudo dmesg 2>/dev/null | grep -iE "kvm|qemu" | tail -50 || true;
+            echo "=== /proc/cpuinfo (model + tsc) ===";
+            grep -E "^model name|^cpu MHz|^flags" /proc/cpuinfo | head -6;
+            echo "=== /sys/devices/system/clocksource/clocksource0/current_clocksource ===";
+            cat /sys/devices/system/clocksource/clocksource0/current_clocksource 2>/dev/null || true;
+          ' EXIT
           t0=$EPOCHREALTIME
           time snapc run -- bash -c 'set -e; ls -l /home/rlock/repo/.pg-prewarm /home/rlock/repo/.schema-loaded'
           t1=$EPOCHREALTIME
